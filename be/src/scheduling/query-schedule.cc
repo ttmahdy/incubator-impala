@@ -68,24 +68,83 @@ QuerySchedule::QuerySchedule(const TUniqueId& query_id,
     query_events_(query_events),
     num_fragment_instances_(0),
     num_scan_ranges_(0),
+    next_instance_id_(query_id),
     is_admitted_(false) {
   fragment_exec_params_.resize(request.fragments.size());
-  // Build two maps to map node ids to their fragments as well as to the offset in their
-  // fragment's plan's nodes list.
-  for (int i = 0; i < request.fragments.size(); ++i) {
-    int node_idx = 0;
-    for (const TPlanNode& node: request.fragments[i].plan.nodes) {
-      if (plan_node_to_fragment_idx_.size() < node.node_id + 1) {
-        plan_node_to_fragment_idx_.resize(node.node_id + 1);
-        plan_node_to_plan_node_idx_.resize(node.node_id + 1);
+  bool is_mt_execution = request.query_ctx.request.query_options.mt_dop != 1;
+
+  if (is_mt_execution) {
+    InitMtFragmentExecParams();
+
+    // populate plan_node_to_fragment_id_ and plan_node_to_plan_node_idx_
+    for (const TPlanExecInfo& plan_exec_info: request.mt_plan_exec_info) {
+      for (const TPlanFragment& fragment: plan_exec_info.fragments) {
+        for (int i = 0; i < fragment.plan.nodes.size(); ++i) {
+          const TPlanNode& node = fragment.plan.nodes[i];
+          if (plan_node_to_fragment_id_.size() < node.node_id + 1) {
+            plan_node_to_fragment_id_.resize(node.node_id + 1);
+            plan_node_to_plan_node_idx_.resize(node.node_id + 1);
+          }
+          DCHECK_EQ(plan_node_to_fragment_id_.size(), plan_node_to_plan_node_idx_.size());
+          plan_node_to_fragment_id_[node.node_id] = fragment.id;
+          plan_node_to_plan_node_idx_[node.node_id] = i;
+        }
       }
-      DCHECK_EQ(plan_node_to_fragment_idx_.size(), plan_node_to_plan_node_idx_.size());
-      plan_node_to_fragment_idx_[node.node_id] = i;
-      plan_node_to_plan_node_idx_[node.node_id] = node_idx;
-      ++node_idx;
+    }
+  } else {
+    // Build two maps to map node ids to their fragments as well as to the offset in their
+    // fragment's plan's nodes list.
+    for (int i = 0; i < request.fragments.size(); ++i) {
+      int node_idx = 0;
+      for (const TPlanNode& node: request.fragments[i].plan.nodes) {
+        if (plan_node_to_fragment_idx_.size() < node.node_id + 1) {
+          plan_node_to_fragment_idx_.resize(node.node_id + 1);
+          plan_node_to_plan_node_idx_.resize(node.node_id + 1);
+        }
+        DCHECK_EQ(plan_node_to_fragment_idx_.size(), plan_node_to_plan_node_idx_.size());
+        plan_node_to_fragment_idx_[node.node_id] = i;
+        plan_node_to_plan_node_idx_[node.node_id] = node_idx;
+        ++node_idx;
+      }
     }
   }
 }
+
+void QuerySchedule::InitMtFragmentExecParams() {
+  // extract TPlanFragments and order by fragment id
+  vector<const TPlanFragment*> fragments;
+  for (const TPlanExecInfo& plan_exec_info: request_.mt_plan_exec_info) {
+    for (const TPlanFragment& fragment: plan_exec_info.fragments) {
+      fragments.push_back(&fragment);
+    }
+  }
+  std::sort(fragments.begin(), fragments.end(),
+      [](const TPlanFragment* a, const TPlanFragment* b) { return a->id < b->id; });
+
+  DCHECK_EQ(mt_fragment_exec_params_.size(), 0);
+  for (const TPlanFragment* fragment: fragments) {
+    mt_fragment_exec_params_.emplace_back(*fragment);
+  }
+
+  // mark coordinator fragment
+  const TPlanFragment& coord_fragment = request_.mt_plan_exec_info[0].fragments[0];
+  if (coord_fragment.partition.type == TPartitionType::UNPARTITIONED) {
+    mt_fragment_exec_params_[coord_fragment.id].is_coord_fragment = true;
+  }
+
+  // compute input fragments
+  for (const TPlanExecInfo& plan_exec_info: request_.mt_plan_exec_info) {
+    // fragments[i] sends its output to fragments[dest_fragment_idx[i-1]]
+    for (int i = 1; i < plan_exec_info.fragments.size(); ++i) {
+      const TPlanFragment& fragment = plan_exec_info.fragments[i];
+      FragmentId dest_id =
+          plan_exec_info.fragments[plan_exec_info.dest_fragment_idx[i - 1]].id;
+      MtFragmentExecParams& dest_params = mt_fragment_exec_params_[dest_id];
+      dest_params.input_fragments.push_back(fragment.id);
+    }
+  }
+}
+
 
 int64_t QuerySchedule::GetClusterMemoryEstimate() const {
   DCHECK_GT(unique_hosts_.size(), 0);
@@ -153,7 +212,7 @@ int16_t QuerySchedule::GetPerHostVCores() const {
 }
 
 void QuerySchedule::GetResourceHostport(const TNetworkAddress& src,
-    TNetworkAddress* dst) {
+    TNetworkAddress* dst) const {
   DCHECK(dst != NULL);
   DCHECK(resource_resolver_.get() != NULL)
       << "resource_resolver_ is NULL, didn't call SetUniqueHosts()?";
@@ -243,6 +302,27 @@ Status QuerySchedule::ValidateReservation() {
     return Status(ss.str());
   }
   return Status::OK();
+}
+
+TUniqueId QuerySchedule::GetNextInstanceId() {
+  ++next_instance_id_.lo;
+  return next_instance_id_;
+}
+
+const TPlanFragment& FInstanceExecParams::fragment() const {
+  return fragment_exec_params.fragment;
+}
+
+int QuerySchedule::GetNumFragmentInstances() const {
+  if (mt_fragment_exec_params_.empty()) {
+    return num_fragment_instances_;
+  } else {
+    int result = 0;
+    for (const auto& fragment_exec_params: mt_fragment_exec_params_) {
+      result += fragment_exec_params.instance_exec_params.size();
+    }
+    return result;
+  }
 }
 
 }

@@ -46,6 +46,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.cloudera.impala.analysis.AnalysisContext;
+import com.cloudera.impala.analysis.AnalysisContext.AnalysisResult;
 import com.cloudera.impala.analysis.Analyzer;
 import com.cloudera.impala.analysis.CreateDataSrcStmt;
 import com.cloudera.impala.analysis.CreateDropRoleStmt;
@@ -120,6 +121,7 @@ import com.cloudera.impala.thrift.TLineageGraph;
 import com.cloudera.impala.thrift.TLoadDataReq;
 import com.cloudera.impala.thrift.TLoadDataResp;
 import com.cloudera.impala.thrift.TMetadataOpRequest;
+import com.cloudera.impala.thrift.TPlanExecInfo;
 import com.cloudera.impala.thrift.TPlanFragment;
 import com.cloudera.impala.thrift.TPlanFragmentTree;
 import com.cloudera.impala.thrift.TQueryCtx;
@@ -908,6 +910,219 @@ public class Frontend {
   }
 
   /**
+   * Return a TPlanExecInfo corresponding to the plan with root fragment 'planRoot'.
+   */
+  private TPlanExecInfo createPlanExecInfo(PlanFragment planRoot, Planner planner,
+      TQueryCtx queryCtx, TQueryExecRequest queryExecRequest) {
+    TPlanExecInfo result = new TPlanExecInfo();
+    ArrayList<PlanFragment> fragments = planRoot.getNodesPreOrder();
+
+    // map from fragment to its index in TPlanExecInfo.fragments; needed for
+    // TPlanExecInfo.dest_fragment_idx
+    List<ScanNode> scanNodes = Lists.newArrayList();
+    Map<PlanFragment, Integer> fragmentIdx = Maps.newHashMap();
+    for (int idx = 0; idx < fragments.size(); ++idx) {
+      PlanFragment fragment = fragments.get(idx);
+      Preconditions.checkNotNull(fragment.getPlanRoot());
+      fragment.getPlanRoot().collect(Predicates.instanceOf(ScanNode.class), scanNodes);
+      fragmentIdx.put(fragment, idx);
+    }
+
+    // set fragment destinations
+    for (int i = 1; i < fragments.size(); ++i) {
+      PlanFragment dest = fragments.get(i).getDestFragment();
+      Integer idx = fragmentIdx.get(dest);
+      Preconditions.checkState(idx != null);
+      result.addToDest_fragment_idx(idx.intValue());
+    }
+
+    // Set scan ranges/locations for scan nodes.
+    LOG.debug("get scan range locations");
+    Set<TTableName> tablesMissingStats = Sets.newTreeSet();
+    Set<TTableName> tablesWithCorruptStats = Sets.newTreeSet();
+    for (ScanNode scanNode: scanNodes) {
+      result.putToPer_node_scan_ranges(
+          scanNode.getId().asInt(), scanNode.getScanRangeLocations());
+      if (scanNode.isTableMissingStats()) {
+        tablesMissingStats.add(scanNode.getTupleDesc().getTableName().toThrift());
+      }
+      if (scanNode.hasCorruptTableStats()) {
+        tablesWithCorruptStats.add(scanNode.getTupleDesc().getTableName().toThrift());
+      }
+    }
+
+    for (TTableName tableName: tablesMissingStats) {
+      queryCtx.addToTables_missing_stats(tableName);
+    }
+    for (TTableName tableName: tablesWithCorruptStats) {
+      queryCtx.addToTables_with_corrupt_stats(tableName);
+    }
+
+    // Compute resource requirements after scan range locations because the cost
+    // estimates of scan nodes rely on them.
+    try {
+      planner.computeResourceReqs(fragments, true, queryExecRequest);
+    } catch (Exception e) {
+      // Turn exceptions into a warning to allow the query to execute.
+      LOG.error("Failed to compute resource requirements for query\n" +
+          queryCtx.request.getStmt(), e);
+    }
+
+    // The fragment at this point has all state set, serialize it to thrift.
+    for (PlanFragment fragment: fragments) {
+      TPlanFragment thriftFragment = fragment.toThrift();
+      result.addToFragments(thriftFragment);
+    }
+
+    return result;
+  }
+
+  /**
+   * Create a populated TQueryExecRequest, corresponding to the supplied TQueryCtx,
+   * for multi-threaded execution.
+   */
+  private TQueryExecRequest mtCreateExecRequest(
+      Planner planner, StringBuilder explainString)
+      throws ImpalaException {
+    TQueryCtx queryCtx = planner.getQueryCtx();
+    Preconditions.checkState(queryCtx.request.query_options.mt_dop > 1);
+    // for now, always disable spilling in the backend
+    queryCtx.setDisable_spilling(true);
+    TQueryExecRequest result = new TQueryExecRequest();
+
+    LOG.debug("create mt plan");
+    List<PlanFragment> planRoots = planner.createParallelPlans();
+
+    // create EXPLAIN output;
+    // use EXTENDED by default for all non-explain statements
+    TExplainLevel explainLevel = TExplainLevel.EXTENDED;
+    // use the query option for explain stmts and tests (e.g., planner tests)
+    AnalysisResult analysisResult = planner.getAnalysisResult();
+    if (analysisResult.isExplainStmt() || RuntimeEnv.INSTANCE.isTestEnv()) {
+      explainLevel = queryCtx.request.query_options.getExplain_level();
+    }
+    result.setQuery_ctx(queryCtx);  // needed by getExplainString()
+    explainString.append(
+        planner.getExplainString(
+          Lists.newArrayList(planRoots.get(0)), result, explainLevel));
+    result.setQuery_plan(explainString.toString());
+
+    // create per-plan exec info;
+    // also assemble list of names of tables with missing or corrupt stats for
+    // assembling a warning message
+    for (PlanFragment planRoot: planRoots) {
+      result.addToMt_plan_exec_info(
+          createPlanExecInfo(planRoot, planner, queryCtx, result));
+    }
+
+    // assign fragment ids
+    int id = 0;
+    for (TPlanExecInfo planExecInfo: result.mt_plan_exec_info) {
+      for (TPlanFragment fragment: planExecInfo.fragments) fragment.setId(id++);
+    }
+
+    return result;
+  }
+
+  /**
+   * Create a populated TQueryExecRequest corresponding to the supplied TQueryCtx.
+   */
+  private TQueryExecRequest createExecRequest(
+      Planner planner, StringBuilder explainString)
+      throws ImpalaException {
+    // create plan
+    LOG.debug("create plan");
+    ArrayList<PlanFragment> fragments = planner.createPlan();
+
+    List<ScanNode> scanNodes = Lists.newArrayList();
+    // map from fragment to its index in queryExecRequest.fragments; needed for
+    // queryExecRequest.dest_fragment_idx
+    Map<PlanFragment, Integer> fragmentIdx = Maps.newHashMap();
+
+    for (int idx = 0; idx < fragments.size(); ++idx) {
+      PlanFragment fragment = fragments.get(idx);
+      Preconditions.checkNotNull(fragment.getPlanRoot());
+      fragment.getPlanRoot().collect(Predicates.instanceOf(ScanNode.class), scanNodes);
+      fragmentIdx.put(fragment, idx);
+    }
+
+    TQueryExecRequest result = new TQueryExecRequest();
+    // set fragment destinations
+    for (int i = 1; i < fragments.size(); ++i) {
+      PlanFragment dest = fragments.get(i).getDestFragment();
+      Integer idx = fragmentIdx.get(dest);
+      Preconditions.checkState(idx != null);
+      result.addToDest_fragment_idx(idx.intValue());
+    }
+
+    // Set scan ranges/locations for scan nodes.
+    // Also assemble list of tables names missing stats for assembling a warning message.
+    LOG.debug("get scan range locations");
+    Set<TTableName> tablesMissingStats = Sets.newTreeSet();
+    // Assemble a similar list for corrupt stats
+    Set<TTableName> tablesWithCorruptStats = Sets.newTreeSet();
+    for (ScanNode scanNode: scanNodes) {
+      result.putToPer_node_scan_ranges(
+          scanNode.getId().asInt(), scanNode.getScanRangeLocations());
+      if (scanNode.isTableMissingStats()) {
+        tablesMissingStats.add(scanNode.getTupleDesc().getTableName().toThrift());
+      }
+      if (scanNode.hasCorruptTableStats()) {
+        tablesWithCorruptStats.add(scanNode.getTupleDesc().getTableName().toThrift());
+      }
+    }
+
+    TQueryCtx queryCtx = planner.getQueryCtx();
+    for (TTableName tableName: tablesMissingStats) {
+      queryCtx.addToTables_missing_stats(tableName);
+    }
+    for (TTableName tableName: tablesWithCorruptStats) {
+      queryCtx.addToTables_with_corrupt_stats(tableName);
+    }
+
+    // Optionally disable spilling in the backend. Allow spilling if there are plan hints
+    // or if all tables have stats.
+    AnalysisResult analysisResult = planner.getAnalysisResult();
+    if (queryCtx.request.query_options.isDisable_unsafe_spills()
+        && !tablesMissingStats.isEmpty()
+        && !analysisResult.getAnalyzer().hasPlanHints()) {
+      queryCtx.setDisable_spilling(true);
+    }
+
+    // Compute resource requirements after scan range locations because the cost
+    // estimates of scan nodes rely on them.
+    try {
+      planner.computeResourceReqs(fragments, true, result);
+    } catch (Exception e) {
+      // Turn exceptions into a warning to allow the query to execute.
+      LOG.error("Failed to compute resource requirements for query\n" +
+          queryCtx.request.getStmt(), e);
+    }
+
+    // The fragment at this point has all state set, assign sequential ids
+    // and serialize to thrift.
+    for (int i = 0; i < fragments.size(); ++i) {
+      PlanFragment fragment = fragments.get(i);
+      TPlanFragment thriftFragment = fragment.toThrift();
+      thriftFragment.setId(i);
+      result.addToFragments(thriftFragment);
+    }
+
+    // Use EXTENDED by default for all non-explain statements.
+    TExplainLevel explainLevel = TExplainLevel.EXTENDED;
+    // Use the query option for explain stmts and tests (e.g., planner tests).
+    if (analysisResult.isExplainStmt() || RuntimeEnv.INSTANCE.isTestEnv()) {
+      explainLevel = queryCtx.request.query_options.getExplain_level();
+    }
+
+    result.setQuery_ctx(queryCtx);  // needed by getExplainString()
+    explainString.append(
+        planner.getExplainString(fragments, result, explainLevel));
+    result.setQuery_plan(explainString.toString());
+    return result;
+  }
+
+  /**
    * Create a populated TExecRequest corresponding to the supplied TQueryCtx.
    */
   public TExecRequest createExecRequest(TQueryCtx queryCtx, StringBuilder explainString)
@@ -951,113 +1166,18 @@ public class Frontend {
         || analysisResult.isCreateTableAsSelectStmt() || analysisResult.isUpdateStmt()
         || analysisResult.isDeleteStmt());
 
-    TQueryExecRequest queryExecRequest = new TQueryExecRequest();
-    // create plan
-    LOG.debug("create plan");
     Planner planner = new Planner(analysisResult, queryCtx);
-    if (RuntimeEnv.INSTANCE.isTestEnv()
-        && queryCtx.request.query_options.mt_num_cores != 1) {
-      // TODO: this is just to be able to run tests; implement this
-      List<PlanFragment> planRoots = planner.createParallelPlans();
-      for (PlanFragment planRoot: planRoots) {
-        TPlanFragmentTree thriftPlan = planRoot.treeToThrift();
-        queryExecRequest.addToMt_plans(thriftPlan);
-      }
-      queryExecRequest.setDesc_tbl(analysisResult.getAnalyzer().getDescTbl().toThrift());
-      queryExecRequest.setQuery_ctx(queryCtx);
-      explainString.append(planner.getExplainString(
-          Lists.newArrayList(planRoots.get(0)), queryExecRequest,
-          TExplainLevel.STANDARD));
-      queryExecRequest.setQuery_plan(explainString.toString());
-      result.setQuery_exec_request(queryExecRequest);
-      return result;
+    TQueryExecRequest queryExecRequest;
+    if (analysisResult.isQueryStmt() && queryCtx.request.query_options.mt_dop > 1) {
+      queryExecRequest = mtCreateExecRequest(planner, explainString);
+    } else {
+      queryExecRequest = createExecRequest(planner, explainString);
     }
-    ArrayList<PlanFragment> fragments = planner.createPlan();
-
-    List<ScanNode> scanNodes = Lists.newArrayList();
-    // map from fragment to its index in queryExecRequest.fragments; needed for
-    // queryExecRequest.dest_fragment_idx
-    Map<PlanFragment, Integer> fragmentIdx = Maps.newHashMap();
-
-    for (int idx = 0; idx < fragments.size(); ++idx) {
-      PlanFragment fragment = fragments.get(idx);
-      Preconditions.checkNotNull(fragment.getPlanRoot());
-      fragment.getPlanRoot().collect(Predicates.instanceOf(ScanNode.class), scanNodes);
-      fragmentIdx.put(fragment, idx);
-    }
-
-    // set fragment destinations
-    for (int i = 1; i < fragments.size(); ++i) {
-      PlanFragment dest = fragments.get(i).getDestFragment();
-      Integer idx = fragmentIdx.get(dest);
-      Preconditions.checkState(idx != null);
-      queryExecRequest.addToDest_fragment_idx(idx.intValue());
-    }
-
-    // Set scan ranges/locations for scan nodes.
-    // Also assemble list of tables names missing stats for assembling a warning message.
-    LOG.debug("get scan range locations");
-    Set<TTableName> tablesMissingStats = Sets.newTreeSet();
-    // Assemble a similar list for corrupt stats
-    Set<TTableName> tablesWithCorruptStats = Sets.newTreeSet();
-    for (ScanNode scanNode: scanNodes) {
-      queryExecRequest.putToPer_node_scan_ranges(
-          scanNode.getId().asInt(),
-          scanNode.getScanRangeLocations());
-      if (scanNode.isTableMissingStats()) {
-        tablesMissingStats.add(scanNode.getTupleDesc().getTableName().toThrift());
-      }
-      if (scanNode.hasCorruptTableStats()) {
-        tablesWithCorruptStats.add(scanNode.getTupleDesc().getTableName().toThrift());
-      }
-    }
-
-    queryExecRequest.setHost_list(analysisResult.getAnalyzer().getHostIndex().getList());
-    for (TTableName tableName: tablesMissingStats) {
-      queryCtx.addToTables_missing_stats(tableName);
-    }
-    for (TTableName tableName: tablesWithCorruptStats) {
-      queryCtx.addToTables_with_corrupt_stats(tableName);
-    }
-
-    // Optionally disable spilling in the backend. Allow spilling if there are plan hints
-    // or if all tables have stats.
-    if (queryCtx.request.query_options.isDisable_unsafe_spills()
-        && !tablesMissingStats.isEmpty()
-        && !analysisResult.getAnalyzer().hasPlanHints()) {
-      queryCtx.setDisable_spilling(true);
-    }
-
-    // Compute resource requirements after scan range locations because the cost
-    // estimates of scan nodes rely on them.
-    try {
-      planner.computeResourceReqs(fragments, true, queryExecRequest);
-    } catch (Exception e) {
-      // Turn exceptions into a warning to allow the query to execute.
-      LOG.error("Failed to compute resource requirements for query\n" +
-          queryCtx.request.getStmt(), e);
-    }
-
-    // The fragment at this point has all state set, serialize it to thrift.
-    for (PlanFragment fragment: fragments) {
-      TPlanFragment thriftFragment = fragment.toThrift();
-      queryExecRequest.addToFragments(thriftFragment);
-    }
-
-    // Use EXTENDED by default for all non-explain statements.
-    TExplainLevel explainLevel = TExplainLevel.EXTENDED;
-    // Use the query option for explain stmts and tests (e.g., planner tests).
-    if (analysisResult.isExplainStmt() || RuntimeEnv.INSTANCE.isTestEnv()) {
-      explainLevel = queryCtx.request.query_options.getExplain_level();
-    }
-
-    // Global query parameters to be set in each TPlanExecRequest.
+    queryExecRequest.setDesc_tbl(
+        planner.getAnalysisResult().getAnalyzer().getDescTbl().toThrift());
     queryExecRequest.setQuery_ctx(queryCtx);
-
-    explainString.append(
-        planner.getExplainString(fragments, queryExecRequest, explainLevel));
-    queryExecRequest.setQuery_plan(explainString.toString());
-    queryExecRequest.setDesc_tbl(analysisResult.getAnalyzer().getDescTbl().toThrift());
+    queryExecRequest.setHost_list(analysisResult.getAnalyzer().getHostIndex().getList());
+    result.setQuery_exec_request(queryExecRequest);
 
     TLineageGraph thriftLineageGraph = analysisResult.getThriftLineageGraph();
     if (thriftLineageGraph != null && thriftLineageGraph.isSetQuery_text()) {
@@ -1069,8 +1189,6 @@ public class Frontend {
       createExplainRequest(explainString.toString(), result);
       return result;
     }
-
-    result.setQuery_exec_request(queryExecRequest);
 
     if (analysisResult.isQueryStmt()) {
       // fill in the metadata

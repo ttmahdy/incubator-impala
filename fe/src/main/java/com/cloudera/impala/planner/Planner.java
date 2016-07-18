@@ -42,6 +42,11 @@ public class Planner {
     ctx_ = new PlannerContext(analysisResult, queryCtx);
   }
 
+  public TQueryCtx getQueryCtx() { return ctx_.getQueryCtx(); }
+  public AnalysisContext.AnalysisResult getAnalysisResult() {
+    return ctx_.getAnalysisResult();
+  }
+
   /**
    * Returns a list of plan fragments for executing an analyzed parse tree.
    * May return a single-node or distributed executable plan. If enabled (through a

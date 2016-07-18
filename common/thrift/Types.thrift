@@ -19,6 +19,7 @@ namespace cpp impala
 namespace java com.cloudera.impala.thrift
 
 typedef i64 TTimestamp
+typedef i32 TFragmentId
 typedef i32 TPlanNodeId
 typedef i32 TTupleId
 typedef i32 TSlotId

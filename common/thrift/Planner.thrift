@@ -31,11 +31,16 @@ include "Partitions.thrift"
 // plan fragment, including how to produce and how to partition its output.
 // It leaves out node-specific parameters needed for the actual execution.
 struct TPlanFragment {
+  // Unique within a query; range: 0..<total # fragments>
+  // TODO: should this be called idx, to distinguish more clearly from a
+  // globally unique id?
+  1: required Types.TFragmentId id
+
   // display name to be shown in the runtime profile; unique within a query
-  1: required string display_name
+  2: required string display_name
 
   // no plan or descriptor table: query without From clause
-  2: optional PlanNodes.TPlan plan
+  3: optional PlanNodes.TPlan plan
 
   // exprs that produce values for slots of output tuple (one expr per slot);
   // if not set, plan fragment materializes full rows of plan_tree

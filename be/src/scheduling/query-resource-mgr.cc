@@ -51,9 +51,14 @@ ResourceResolver::ResourceResolver(const unordered_set<TNetworkAddress>& unique_
 }
 
 void ResourceResolver::GetResourceHostport(const TNetworkAddress& src,
-    TNetworkAddress* dest) {
+    TNetworkAddress* dest) const {
   if (ExecEnv::GetInstance()->is_pseudo_distributed_llama()) {
-    *dest = impalad_to_dn_[src];
+    auto entry = impalad_to_dn_.find(src);
+    if (entry != impalad_to_dn_.end()) {
+      *dest = entry->second;
+    } else {
+      *dest = TNetworkAddress();
+    }
   } else {
     dest->hostname = src.hostname;
     dest->port = 0;

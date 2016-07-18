@@ -50,7 +50,7 @@ class ResourceResolver {
   /// impalad_to_dn_ mapping to populate dest. When using the regular Llama, this
   /// translation sets a fixed port of 0 in dest because the Llama strips away the port
   /// of resource locations.
-  void GetResourceHostport(const TNetworkAddress& src, TNetworkAddress* dst);
+  void GetResourceHostport(const TNetworkAddress& src, TNetworkAddress* dst) const;
 
  private:
   /// Impala mini clusters using the Mini Llama require translating the impalad hostports

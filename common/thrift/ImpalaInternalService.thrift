@@ -182,11 +182,11 @@ struct TQueryOptions {
   // "name".
   43: optional TParquetFallbackSchemaResolution parquet_fallback_schema_resolution = 0
 
-  // Multi-threaded execution: number of cores per query per node.
+  // Multi-threaded execution: degree of parallelism per query per node.
   // > 1: multi-threaded execution mode, with given number of cores
   // 1: single-threaded execution mode
   // 0: multi-threaded execution mode, number of cores is the pool default
-  44: optional i32 mt_num_cores = 1
+  44: optional i32 mt_dop = 1
 
   // If true, INSERT writes to S3 go directly to their final location rather than being
   // copied there by the coordinator. We cannot do this for INSERT OVERWRITES because for
@@ -251,6 +251,7 @@ struct TClientRequest {
 // TODO: Separate into FE/BE initialized vars.
 struct TQueryCtx {
   // Client request containing stmt to execute and query options.
+  // TODO: rename to client_request, we have too many requests
   1: required TClientRequest request
 
   // A globally unique id assigned to the entire query in the BE.
@@ -300,9 +301,6 @@ struct TQueryCtx {
 // fragment.
 struct TPlanFragmentCtx {
   1: required Planner.TPlanFragment fragment
-
-  // total number of instances of this fragment
-  2: required i32 num_fragment_instances
 }
 
 // A scan range plus the parameters needed to execute that scan.
@@ -341,12 +339,14 @@ struct TPlanFragmentInstanceCtx {
 
   // Number of senders for ExchangeNodes contained in TPlanFragment.plan_tree;
   // needed to create a DataStreamRecvr
+  // TODO for rpc batching: move these to TPlanFragmentCtx
   5: required map<Types.TPlanNodeId, i32> per_exch_num_senders
 
   // Output destinations, one per output partition.
   // The partitioning of the output is specified by
   // TPlanFragment.output_sink.output_partition.
   // The number of output partitions is destinations.size().
+  // TODO for rpc batching: move these to TPlanFragmentCtx
   6: list<TPlanFragmentDestination> destinations
 
   // Debug options: perform some action in a particular phase of a particular node

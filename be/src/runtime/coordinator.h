@@ -67,6 +67,7 @@ class TPlanExecRequest;
 class TRuntimeProfileTree;
 class RuntimeProfile;
 class TablePrinter;
+class TPlanFragment;
 
 struct DebugOptions;
 
@@ -91,6 +92,14 @@ struct DebugOptions;
 //
 /// The implementation ensures that setting an overall error status and initiating
 /// cancellation of local and all remote fragments is atomic.
+///
+/// TODO: move into separate subdirectory and move nested classes into separate files
+/// and unnest them
+///
+/// TODO: remove all data structures and functions that are superceded by their
+/// multi-threaded counterpart and remove the "Mt" prefix with which the latter
+/// is currently marked
+
 class Coordinator {
  public:
   Coordinator(const TQueryOptions& query_options, ExecEnv* exec_env,
@@ -104,7 +113,7 @@ class Coordinator {
   /// Populates and prepares output_expr_ctxs from the coordinator's fragment if there is
   /// one, and LLVM optimizes them together with the fragment's other exprs.
   /// A call to Exec() must precede all other member function calls.
-  Status Exec(QuerySchedule& schedule, std::vector<ExprContext*>* output_expr_ctxs);
+  Status Exec(const QuerySchedule& schedule, std::vector<ExprContext*>* output_expr_ctxs);
 
   /// Blocks until result rows are ready to be retrieved via GetNext(), or, if the
   /// query doesn't return rows, until the query finishes or is cancelled.
@@ -244,6 +253,9 @@ class Coordinator {
   ProgressUpdater progress_;
 
   /// protects all fields below
+  /// TODO: document lock ordering; it looks like it's:
+  /// 1. FragmentInstanceState::lock_
+  /// 2. lock_
   boost::mutex lock_;
 
   /// Overall status of the entire query; set to the first reported fragment error
@@ -344,9 +356,11 @@ class Coordinator {
 
     /// Execution rates for instances of this fragment
     SummaryStats rates;
+
+    PerFragmentProfileData() : averaged_profile(NULL), root_profile(NULL) {}
   };
 
-  /// This is indexed by fragment_idx.
+  /// This is indexed by fragment id (TPlanFragment.id).
   /// This array is only modified at coordinator startup and query completion and
   /// does not need locks.
   std::vector<PerFragmentProfileData> fragment_profiles_;
@@ -369,7 +383,7 @@ class Coordinator {
     TPlanNodeId node_id;
     bool is_local;
     bool is_bound_by_partition_columns;
-    boost::unordered_set<int> fragment_instance_idxs;
+    boost::unordered_set<int> fragment_instance_state_idxs;
 
     FilterTarget(const TRuntimeFilterTargetDesc& tFilterTarget) {
       node_id = tFilterTarget.node_id;
@@ -385,7 +399,7 @@ class Coordinator {
     std::vector<FilterTarget> targets;
 
     // Index into fragment_instance_states_ for source fragment instances.
-    boost::unordered_set<int> src_fragment_instance_idxs;
+    boost::unordered_set<int> src_fragment_instance_state_idxs;
 
     /// Number of remaining backends to hear from before filter is complete.
     int pending_count;
@@ -434,18 +448,25 @@ class Coordinator {
   /// instance.
   /// 'fragment_instance_idx' is the 0-based ordinal of this particular fragment
   /// instance within its fragment.
-  void SetExecPlanFragmentParams(QuerySchedule& schedule, const TPlanFragment& fragment,
-      const FragmentExecParams& params, int instance_state_idx, int fragment_idx,
-      int fragment_instance_idx, const TNetworkAddress& coord,
+  void SetExecPlanFragmentParams(const QuerySchedule& schedule,
+      const TPlanFragment& fragment, const FragmentExecParams& params,
+      int instance_state_idx, int fragment_instance_idx, const TNetworkAddress& coord,
       TExecPlanFragmentParams* rpc_params);
+  void MtSetExecPlanFragmentParams(const QuerySchedule& schedule,
+    const FInstanceExecParams& params, int instance_state_idx,
+    int fragment_instance_idx,
+    const TNetworkAddress& coord, TExecPlanFragmentParams* rpc_params);
 
   /// Wrapper for ExecPlanFragment() RPC. This function will be called in parallel from
   /// multiple threads. Creates a new FragmentInstanceState and registers it in
   /// fragment_instance_states_, then calls RPC to issue fragment on remote impalad.
-  void ExecRemoteFragment(const FragmentExecParams* fragment_exec_params,
-      const TPlanFragment* plan_fragment, DebugOptions* debug_options,
-      QuerySchedule* schedule, int instance_state_idx, int fragment_idx,
+  void ExecRemoteFragment(const FragmentExecParams& fragment_exec_params,
+      const TPlanFragment& plan_fragment, DebugOptions* debug_options,
+      const QuerySchedule& schedule, int instance_state_idx,
       int fragment_instance_idx);
+  void MtExecRemoteFInstance(const FInstanceExecParams& exec_params,
+    const DebugOptions* debug_options, const QuerySchedule& schedule,
+    int instance_state_idx, int fragment_instance_idx);
 
   /// Determine fragment number, given fragment id.
   int GetFragmentNum(const TUniqueId& fragment_id);
@@ -454,20 +475,9 @@ class Coordinator {
   /// Attaches split size summary to the appropriate runtime profile
   void PrintFragmentInstanceInfo();
 
-  /// Create aggregate counters for all scan nodes in any of the fragments
-  void CreateAggregateCounters(const std::vector<TPlanFragment>& fragments);
-
   /// Collect scan node counters from the profile.
   /// Assumes lock protecting profile and result is held.
   void CollectScanNodeCounters(RuntimeProfile*, FragmentInstanceCounters* result);
-
-  /// Derived counter function: aggregates throughput for node_id across all fragment
-  /// instances (id needs to be for a ScanNode).
-  int64_t ComputeTotalThroughput(int node_id);
-
-  /// Derived counter function: aggregates total completed scan ranges for node_id
-  /// across all fragment instances (id needs to be for a ScanNode).
-  int64_t ComputeTotalScanRangesComplete(int node_id);
 
   /// Runs cancel logic. Assumes that lock_ is held.
   void CancelInternal();
@@ -488,9 +498,9 @@ class Coordinator {
   /// Returns only when either all fragment instances have reported success or the query
   /// is in error. Returns the status of the query.
   /// It is safe to call this concurrently, but any calls must be made only after Exec().
-  /// WaitForAllBackends may be called before Wait(), but note that Wait() guarantees
+  /// WaitForAllInstances may be called before Wait(), but note that Wait() guarantees
   /// that any coordinator fragment has finished, which this method does not.
-  Status WaitForAllBackends();
+  Status WaitForAllInstances();
 
   /// Perform any post-query cleanup required. Called by Wait() only after all fragment
   /// instances have returned, or if the query has failed, in which case it only cleans up
@@ -503,17 +513,17 @@ class Coordinator {
   /// Initializes the structures in runtime profile and exec_summary_. Must be
   /// called before RPCs to start remote fragments.
   void InitExecProfile(const TQueryExecRequest& request);
+  void MtInitExecProfiles(const QuerySchedule& schedule);
+
+  /// Initialize the structures to collect execution summary of every plan node
+  /// (exec_summary_ and plan_node_id_to_summary_map_)
+  void MtInitExecSummary(const QuerySchedule& schedule);
 
   /// Update fragment profile information from a fragment instance state.
-  /// This is called repeatedly from UpdateFragmentExecStatus(),
-  /// and also at the end of the query from ReportQuerySummary().
-  /// This method calls UpdateAverage() and AddChild(), which obtain their own locks
-  /// on the instance state.
   void UpdateAverageProfile(FragmentInstanceState* fragment_instance_state);
 
   /// Compute the summary stats (completion_time and rates)
-  /// for an individual fragment_profile_ based on the specified backed_exec_state.
-  /// Called only from ReportQuerySummary() below.
+  /// for an individual fragment_profile_ based on the specified instance state.
   void ComputeFragmentSummaryStats(FragmentInstanceState* fragment_instance_state);
 
   /// Outputs aggregate query profile summary.  This is assumed to be called at the end of
@@ -522,7 +532,7 @@ class Coordinator {
 
   /// Populates the summary execution stats from the profile. Can only be called when the
   /// query is done.
-  void UpdateExecSummary(int fragment_idx, int instance_idx, RuntimeProfile* profile);
+  void UpdateExecSummary(const FragmentInstanceState& instance_state);
 
   /// Determines what the permissions of directories created by INSERT statements should
   /// be if permission inheritance is enabled. Populates a map from all prefixes of
@@ -545,10 +555,38 @@ class Coordinator {
   /// SubplanNode with respect to setting collection-slots to NULL.
   void ValidateCollectionSlots(RowBatch* batch);
 
+  /// TODO-MT: consider moving all TQueryExecRequest utility functions into a separate
+  /// class
+
+  /// Return the coordinator fragment, or NULL if there isn't one.
+  const TPlanFragment* GetCoordFragment(const TQueryExecRequest& request) const;
+
+  /// Return all fragments belonging to exec request in 'fragments'.
+  void GetTPlanFragments(const TQueryExecRequest& request,
+      vector<const TPlanFragment*>* fragments) const;
+
+  /// Return number of remote fragment instances for this schedule/request.
+  int GetNumRemoteInstances(const QuerySchedule& schedule) const;
+
+  /// Prepare coordinator fragment for execution (update filter routing table,
+  /// prepare executor, set up output exprs).
+  Status PrepareCoordFragment(const QuerySchedule& schedule,
+      std::vector<ExprContext*>* output_expr_ctxs);
+
   /// Starts all remote fragments contained in the schedule by issuing RPCs in parallel,
-  /// and then waiting for all of the RPCs to complete. Returns an error if there was any
-  /// error starting the fragments.
-  Status StartRemoteFragments(QuerySchedule* schedule);
+  /// and then waiting for all of the RPCs to complete.
+  void StartRemoteFragments(const QuerySchedule& schedule);
+
+  /// Starts all remote fragment instances contained in the schedule by issuing RPCs in
+  /// parallel, and then waiting for all of the RPCs to complete. Also sets up and
+  /// registers the state for the coordinator fragment instance.
+  void MtStartRemoteFInstances(const QuerySchedule& schedule);
+
+  /// Calls CancelInternal() and returns an error if there was any error starting the
+  /// fragments.
+  /// Also updates query_profile_ with the startup latency histogram.
+  /// TODO-MT: is this still used?
+  Status CancelOnStartupError();
 
   /// Build the filter routing table by iterating over all plan nodes and collecting the
   /// filters that they either produce or consume. The source and target fragment

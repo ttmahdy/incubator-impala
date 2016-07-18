@@ -373,7 +373,8 @@ Status ImpalaServer::QueryExecState::ExecLocalCatalogOp(
 Status ImpalaServer::QueryExecState::ExecQueryOrDmlRequest(
     const TQueryExecRequest& query_exec_request) {
   // we always need at least one plan fragment
-  DCHECK_GT(query_exec_request.fragments.size(), 0);
+  DCHECK(query_exec_request.fragments.size() > 0
+      || query_exec_request.mt_plan_exec_info.size() > 0);
 
   if (query_exec_request.__isset.query_plan) {
     stringstream plan_ss;
@@ -424,8 +425,12 @@ Status ImpalaServer::QueryExecState::ExecQueryOrDmlRequest(
   // case, the query can only have a single fragment, and that fragment needs to be
   // executed by the coordinator. This check confirms that.
   // If desc_tbl is set, the query may or may not have a coordinator fragment.
+  bool is_mt_exec = query_exec_request.query_ctx.request.query_options.mt_dop != 1;
+  const TPlanFragment& fragment = is_mt_exec
+      ? query_exec_request.mt_plan_exec_info[0].fragments[0]
+      : query_exec_request.fragments[0];
   bool has_coordinator_fragment =
-      query_exec_request.fragments[0].partition.type == TPartitionType::UNPARTITIONED;
+      fragment.partition.type == TPartitionType::UNPARTITIONED;
   DCHECK(has_coordinator_fragment || query_exec_request.__isset.desc_tbl);
 
   if (FLAGS_enable_rm) {

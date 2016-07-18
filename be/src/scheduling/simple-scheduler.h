@@ -486,7 +486,16 @@ class SimpleScheduler : public Scheduler {
   void ComputeFragmentExecParams(const TQueryExecRequest& exec_request,
       QuerySchedule* schedule);
 
-  /// For each fragment in exec_request, compute the hosts on which to run the instances
+  Status MtComputeScanRangeAssignment(QuerySchedule* schedule);
+  void MtComputeFragmentExecParams(QuerySchedule* schedule);
+  void MtComputeFragmentExecParams(const TPlanExecInfo& plan_exec_info,
+      MtFragmentExecParams* fragment_params, QuerySchedule* schedule);
+  void MtCreateScanInstances(PlanNodeId leftmost_scan_id,
+      MtFragmentExecParams* fragment_params, QuerySchedule* schedule);
+  void MtCreateMirrorInstances(MtFragmentExecParams* fragment_params,
+      QuerySchedule* schedule);
+
+  /// For each fragment in exec_request, computes hosts on which to run the instances
   /// and stores result in fragment_exec_params_.hosts.
   void ComputeFragmentHosts(const TQueryExecRequest& exec_request,
       QuerySchedule* schedule);
@@ -495,6 +504,8 @@ class SimpleScheduler : public Scheduler {
   /// INVALID_PLAN_NODE_ID if no such node present.
   PlanNodeId FindLeftmostNode(
       const TPlan& plan, const std::vector<TPlanNodeType::type>& types);
+  /// Same for scan nodes.
+  PlanNodeId FindLeftmostScan(const TPlan& plan);
 
   /// Return the index (w/in exec_request.fragments) of fragment that sends its output to
   /// exec_request.fragment[fragment_idx]'s leftmost ExchangeNode.
