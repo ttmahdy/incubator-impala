@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE concept PUBLIC "-//OASIS//DTD DITA Concept//EN" "concept.dtd">
+<concept id="num_nodes">
+
+  <title>NUM_NODES Query Option</title>
+  <prolog>
+    <metadata>
+      <data name="Category" value="Impala"/>
+      <data name="Category" value="Impala Query Options"/>
+    </metadata>
+  </prolog>
+
+  <conbody>
+
+    <p>
+      <indexterm audience="Cloudera">NUM_NODES query option</indexterm>
+      Limit the number of nodes that process a query, typically during debugging.
+
+    </p>
+
+    <p>
+      <b>Type:</b> numeric
+    </p>
+
+<p>
+      <b>Allowed values:</b> Only accepts the values 0
+      (meaning all nodes) or 1 (meaning all work is done on the coordinator node).
+</p>
+
+    <p>
+      <b>Default:</b> 0
+    </p>
+
+     <p conref="../shared/impala_common.xml#common/usage_notes_blurb"/>
+
+     <p>
+       If you are diagnosing a problem that you suspect is due to a timing issue due to
+       distributed query processing, you can set <codeph>NUM_NODES=1</codeph> to verify
+       if the problem still occurs when all the work is done on a single node.
+     </p>
+
+    <p conref="../shared/impala_common.xml#common/num_nodes_tip"/>
+
+  </conbody>
+</concept>

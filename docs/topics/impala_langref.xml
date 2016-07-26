@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE concept PUBLIC "-//OASIS//DTD DITA Concept//EN" "concept.dtd">
+<concept id="langref">
+
+  <title><ph audience="PDF">Impala SQL Language Reference</ph><ph audience="HTML">Overview of Impala SQL</ph></title>
+
+  <prolog>
+    <metadata>
+      <data name="Category" value="Impala"/>
+      <data name="Category" value="SQL"/>
+      <data name="Category" value="Data Analysts"/>
+      <data name="Category" value="Developers"/>
+      <data name="Category" value="impala-shell"/>
+    </metadata>
+  </prolog>
+
+  <conbody>
+
+    <p>
+      Impala uses SQL as its query language. Impala interprets SQL statements and performs the
+      full end-to-end processing for each statement. (As opposed to acting as a translation
+      layer for some other Hadoop subsystem.)
+    </p>
+
+    <p>
+      Impala implements many familiar statements, such as <codeph>CREATE TABLE</codeph>,
+      <codeph>INSERT</codeph>, and <codeph>SELECT</codeph>. Currently, the DML statements
+      <codeph>UPDATE</codeph> and <codeph>DELETE</codeph> are not available in the production
+      level of Impala, because big data analytics with Hadoop and HDFS typically involves
+      unchanging data. <codeph>UPDATE</codeph> and <codeph>DELETE</codeph> <i>are</i> available
+      in beta form in the version of Impala used with the Kudu storage layer. For full details
+      about Impala SQL syntax and semantics, see
+      <xref href="impala_langref_sql.xml#langref_sql"/>.
+    </p>
+
+    <p>
+      Queries include clauses such as <codeph>WHERE</codeph>, <codeph>GROUP BY</codeph>,
+      <codeph>ORDER BY</codeph>, and <codeph>JOIN</codeph>. For information about query syntax,
+      see <xref href="impala_select.xml#select"/>.
+    </p>
+
+    <p>
+      Queries can also include function calls, to scalar functions such as
+      <codeph>sin()</codeph> and <codeph>substr()</codeph>, aggregate functions such as
+      <codeph>count()</codeph> and <codeph>avg()</codeph>, and analytic functions such as
+      <codeph>lag()</codeph> and <codeph>rank()</codeph>. For a list of the built-in functions
+      available in Impala queries, see <xref href="impala_functions.xml#builtins"/>.
+    </p>
+
+    <p outputclass="toc"/>
+
+  </conbody>
+
+  <concept id="langref_performance">
+
+    <title>Performance Features</title>
+
+    <conbody>
+
+      <p>
+        The main performance-related SQL features for Impala are:
+      </p>
+
+      <ul>
+        <li>
+          <p>
+            The <codeph>COMPUTE STATS</codeph> statement, and the underlying table statistics
+            and column statistics used in query planning. The statistics are used to estimate
+            the number of rows and size of the result set for queries, subqueries, and the
+            different <q>sides</q> of a join query.
+          </p>
+        </li>
+
+        <li>
+          <p>
+            The output of the <codeph>EXPLAIN</codeph> statement. It outlines the ways in which
+            the query is parallelized, and how much I/O, memory, and so on the query expects to
+            use. You can control the level of detail in the output through a query option.
+          </p>
+        </li>
+
+        <li>
+          <p>
+            Partitioning for tables. By organizing the data for efficient access along one or
+            more dimensions, this technique lets queries read only the relevant data.
+          </p>
+        </li>
+
+        <li>
+          <p>
+            Query hints, especially for join queries. Impala selects from different join
+            algorithms based on the relative sizes of the result sets for each side of the join.
+            In cases where you know the most effective technique for a particular query, you can
+            override the estimates that Impala uses to make that choice, and select the join
+            technique directly.
+          </p>
+        </li>
+
+        <li>
+          <p>
+            Query options. These options control settings that can influence the performance of
+            individual queries when you know the special considerations based on your workload,
+            hardware configuration, or data distribution.
+          </p>
+        </li>
+      </ul>
+
+      <p>
+        Because analytic queries against high volumes of data tend to require full scans against
+        large portions of data from each table, Impala does not include index-related SQL
+        statements such as <codeph>CREATE INDEX</codeph>. The <codeph>COMPUTE STATS</codeph>
+        serves the purpose of analyzing the distribution of data within each column and the
+        overall table. Partitioning optimizes the physical layout of the data for queries that
+        filter on one or more crucial columns.
+      </p>
+
+    </conbody>
+
+  </concept>
+
+  <concept id="hive_interoperability">
+
+    <title>Sharing Tables, Data, and Queries Between Impala and Hive</title>
+
+    <conbody>
+
+      <p>
+        To protect user investment in skills development and query design, Impala provides a
+        high degree of compatibility with the Hive Query Language (HiveQL):
+      </p>
+
+      <ul>
+        <li>
+          Because Impala uses the same metadata store as Hive to record information about table
+          structure and properties, Impala can access tables defined through the native Impala
+          <codeph>CREATE TABLE</codeph> command, or tables created using the Hive data
+          definition language (DDL).
+        </li>
+
+        <li>
+          Impala supports data manipulation (DML) statements similar to the DML component of
+          HiveQL.
+        </li>
+
+        <li>
+          Impala provides many <xref href="impala_functions.xml#builtins">built-in
+          functions</xref> with the same names and parameter types as their HiveQL equivalents.
+        </li>
+      </ul>
+
+      <p>
+        Impala supports most of the same
+        <xref href="impala_langref_sql.xml#langref_sql">statements and clauses</xref> as HiveQL,
+        including, but not limited to <codeph>JOIN</codeph>, <codeph>AGGREGATE</codeph>,
+        <codeph>DISTINCT</codeph>, <codeph>UNION ALL</codeph>, <codeph>ORDER BY</codeph>,
+        <codeph>LIMIT</codeph> and (uncorrelated) subquery in the <codeph>FROM</codeph> clause.
+        Impala also supports <codeph>INSERT INTO</codeph> and <codeph>INSERT OVERWRITE</codeph>.
+      </p>
+
+      <p>
+        Impala supports data types with the same names and semantics as the equivalent Hive data
+        types: <codeph>STRING</codeph>, <codeph>TINYINT</codeph>, <codeph>SMALLINT</codeph>,
+        <codeph>INT</codeph>, <codeph>BIGINT</codeph>, <codeph>FLOAT</codeph>,
+        <codeph>DOUBLE</codeph>, <codeph>BOOLEAN</codeph>, <codeph>STRING</codeph>,
+        <codeph>TIMESTAMP</codeph>. CDH 5.5 / Impala 2.3 and higher also include the complex
+        types <codeph>ARRAY</codeph>, <codeph>STRUCT</codeph>, and <codeph>MAP</codeph>.
+      </p>
+
+      <p>
+        Most HiveQL <codeph>SELECT</codeph> and <codeph>INSERT</codeph> statements run
+        unmodified with Impala. For information about Hive syntax not available in Impala, see
+        <xref href="impala_langref_unsupported.xml#langref_hiveql_delta"/>.
+      </p>
+
+    </conbody>
+
+  </concept>
+
+</concept>

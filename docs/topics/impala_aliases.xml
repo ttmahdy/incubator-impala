@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE concept PUBLIC "-//OASIS//DTD DITA Concept//EN" "concept.dtd">
+<concept id="aliases">
+
+  <title>Overview of Impala Aliases</title>
+  <titlealts><navtitle>Aliases</navtitle></titlealts>
+  <prolog>
+    <metadata>
+      <data name="Category" value="Impala"/>
+      <data name="Category" value="SQL"/>
+      <data name="Category" value="Data Analysts"/>
+      <data name="Category" value="Developers"/>
+      <data name="Category" value="Querying"/>
+      <data name="Category" value="Tables"/>
+      <data name="Category" value="Schemas"/>
+    </metadata>
+  </prolog>
+
+  <conbody>
+
+    <p>
+      When you write the names of tables, columns, or column expressions in a query, you can assign an alias at the
+      same time. Then you can specify the alias rather than the original name when making other references to the
+      table or column in the same statement. You typically specify aliases that are shorter, easier to remember, or
+      both than the original names. The aliases are printed in the query header, making them useful for
+      self-documenting output.
+    </p>
+
+    <p>
+      To set up an alias, add the <codeph>AS <varname>alias</varname></codeph> clause immediately after any table,
+      column, or expression name in the <codeph>SELECT</codeph> list or <codeph>FROM</codeph> list of a query. The
+      <codeph>AS</codeph> keyword is optional; you can also specify the alias immediately after the original name.
+    </p>
+
+    <p>
+      To use an alias name that matches one of the Impala reserved keywords (listed in
+      <xref href="impala_reserved_words.xml#reserved_words"/>), surround the identifier with either single or
+      double quotation marks, or <codeph>``</codeph> characters (backticks).
+    </p>
+
+<codeblock>select c1 as name, c2 as address, c3 as phone from table_with_terse_columns;
+select sum(ss_xyz_dollars_net) as total_sales from table_with_cryptic_columns;
+select one.name, two.address, three.phone from
+  census one, building_directory two, phonebook three
+  where one.id = two.id and two.id = three.id;</codeblock>
+
+    <p>
+      <ph conref="../shared/impala_common.xml#common/aliases_vs_identifiers"/>
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/complex_types_blurb"/>
+
+    <p rev="2.3.0">
+      Queries involving the complex types (<codeph>ARRAY</codeph>,
+      <codeph>STRUCT</codeph>, and <codeph>MAP</codeph>), typically make
+      extensive use of table aliases. These queries involve join clauses
+      where the complex type column is treated as a joined table.
+      To construct two-part or three-part qualified names for the
+      complex column elements in the <codeph>FROM</codeph> list,
+      sometimes it is syntactically required to construct a table
+      alias for the complex column where it is referenced in the join clause.
+      See <xref href="impala_complex_types.xml#complex_types"/> for details and examples.
+    </p>
+
+    <p>
+      <b>Alternatives:</b>
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/views_vs_identifiers"/>
+  </conbody>
+</concept>

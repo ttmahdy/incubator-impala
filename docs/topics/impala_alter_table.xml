@@ -1,0 +1,411 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE concept PUBLIC "-//OASIS//DTD DITA Concept//EN" "concept.dtd">
+<concept id="alter_table">
+
+  <title>ALTER TABLE Statement</title>
+  <titlealts><navtitle>ALTER TABLE</navtitle></titlealts>
+  <prolog>
+    <metadata>
+      <data name="Category" value="Impala"/>
+      <data name="Category" value="Impala Data Types"/>
+      <data name="Category" value="SQL"/>
+      <data name="Category" value="DDL"/>
+      <data name="Category" value="HDFS Caching"/>
+      <data name="Category" value="Tables"/>
+      <data name="Category" value="Schemas"/>
+    </metadata>
+  </prolog>
+
+  <conbody>
+
+    <p>
+      <indexterm audience="Cloudera">ALTER TABLE statement</indexterm>
+      The <codeph>ALTER TABLE</codeph> statement changes the structure or properties of an existing table. In
+      Impala, this is a logical operation that updates the table metadata in the metastore database that Impala
+      shares with Hive; <codeph>ALTER TABLE</codeph> does not actually rewrite, move, and so on the actual data
+      files. Thus, you might need to perform corresponding physical filesystem operations, such as moving data
+      files to a different HDFS directory, rewriting the data files to include extra fields, or converting them to
+      a different file format.
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/syntax_blurb"/>
+
+<codeblock>ALTER TABLE [<varname>old_db_name</varname>.]<varname>old_table_name</varname> RENAME TO [<varname>new_db_name</varname>.]<varname>new_table_name</varname>
+
+ALTER TABLE <varname>name</varname> ADD COLUMNS (<varname>col_spec</varname>[, <varname>col_spec</varname> ...])
+ALTER TABLE <varname>name</varname> DROP [COLUMN] <varname>column_name</varname>
+ALTER TABLE <varname>name</varname> CHANGE <varname>column_name</varname> <varname>new_name</varname> <varname>new_type</varname>
+ALTER TABLE <varname>name</varname> REPLACE COLUMNS (<varname>col_spec</varname>[, <varname>col_spec</varname> ...])
+
+ALTER TABLE <varname>name</varname> { ADD | DROP } PARTITION (<varname>partition_spec</varname>) <ph rev="2.3.0">[PURGE]</ph>
+
+ALTER TABLE <varname>name</varname> [PARTITION (<varname>partition_spec</varname>)]
+  SET { FILEFORMAT <varname>file_format</varname>
+  | LOCATION '<varname>hdfs_path_of_directory</varname>'
+  | TBLPROPERTIES (<varname>table_properties</varname>)
+  | SERDEPROPERTIES (<varname>serde_properties</varname>) }
+
+<ph rev="1.4.0">ALTER TABLE <varname>name</varname> [PARTITION (<varname>partition_spec</varname>)] SET { CACHED IN '<varname>pool_name</varname>' <ph rev="2.2.0">[WITH REPLICATION = <varname>integer</varname>]</ph> | UNCACHED }</ph>
+
+<varname>new_name</varname> ::= [<varname>new_database</varname>.]<varname>new_table_name</varname>
+
+<varname>col_spec</varname> ::= <varname>col_name</varname> <varname>type_name</varname>
+
+<varname>partition_spec</varname> ::= <varname>partition_col</varname>=<varname>constant_value</varname>
+
+<varname>table_properties</varname> ::= '<varname>name</varname>'='<varname>value</varname>'[, '<varname>name</varname>'='<varname>value</varname>' ...]
+
+<varname>serde_properties</varname> ::= '<varname>name</varname>'='<varname>value</varname>'[, '<varname>name</varname>'='<varname>value</varname>' ...]
+
+<varname>file_format</varname> ::= { PARQUET | TEXTFILE | RCFILE | SEQUENCEFILE | AVRO }
+</codeblock>
+
+    <p conref="../shared/impala_common.xml#common/ddl_blurb"/>
+
+    <p conref="../shared/impala_common.xml#common/complex_types_blurb"/>
+
+    <p rev="2.3.0">
+      In CDH 5.5 / Impala 2.3 and higher, the <codeph>ALTER TABLE</codeph> statement can 
+      change the metadata for tables containing complex types (<codeph>ARRAY</codeph>,
+      <codeph>STRUCT</codeph>, and <codeph>MAP</codeph>).
+      For example, you can use an <codeph>ADD COLUMNS</codeph>, <codeph>DROP COLUMN</codeph>, or <codeph>CHANGE</codeph>
+      clause to modify the table layout for complex type columns.
+      Although Impala queries only work for complex type columns in Parquet tables, the complex type support in the
+      <codeph>ALTER TABLE</codeph> statement applies to all file formats.
+      For example, you can use Impala to update metadata for a staging table in a non-Parquet file format where the
+      data is populated by Hive. Or you can use <codeph>ALTER TABLE SET FILEFORMAT</codeph> to change the format
+      of an existing table to Parquet so that Impala can query it. (Remember that changing the file format for a table does
+      not convert the data files within the table; you must prepare any Parquet data files containing complex types
+      outside Impala, and bring them into the table using <codeph>LOAD DATA</codeph> or updating the table's
+      <codeph>LOCATION</codeph> property.
+      See <xref href="impala_complex_types.xml#complex_types"/> for details about using complex types.
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/usage_notes_blurb"/>
+
+    <p>
+      Whenever you specify partitions in an <codeph>ALTER TABLE</codeph> statement, through the <codeph>PARTITION
+      (<varname>partition_spec</varname>)</codeph> clause, you must include all the partitioning columns in the
+      specification.
+    </p>
+
+    <p>
+      Most of the <codeph>ALTER TABLE</codeph> operations work the same for internal tables (managed by Impala) as
+      for external tables (with data files located in arbitrary locations). The exception is renaming a table; for
+      an external table, the underlying data directory is not renamed or moved.
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/s3_blurb"/>
+    <p rev="2.2.0">
+      You can specify an <codeph>s3a://</codeph> prefix in the <codeph>LOCATION</codeph> attribute of a table or partition
+      to make Impala query data from the Amazon S3 filesystem.
+      See <xref href="impala_s3.xml#s3"/> for details.
+    </p>
+
+    <p rev="1.4.0">
+      <b>HDFS caching (CACHED IN clause):</b>
+    </p>
+
+    <p rev="1.4.0">
+      If you specify the <codeph>CACHED IN</codeph> clause, any existing or future data files in the table
+      directory or the partition subdirectories are designated to be loaded into memory with the HDFS caching
+      mechanism. See <xref href="impala_perf_hdfs_caching.xml#hdfs_caching"/> for details about using the HDFS
+      caching feature.
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/impala_cache_replication_factor"/>
+
+    <p conref="../shared/impala_common.xml#common/sync_ddl_blurb"/>
+
+    <p>
+      The following sections show examples of the use cases for various <codeph>ALTER TABLE</codeph> clauses.
+    </p>
+
+    <p>
+      <b>To rename a table (RENAME TO clause):</b>
+    </p>
+
+<!-- Beefing up the syntax in its original location up to, don't need to repeat it here.
+<codeblock>ALTER TABLE <varname>old_name</varname> RENAME TO <varname>new_name</varname>;</codeblock>
+-->
+
+    <p>
+      The <codeph>RENAME TO</codeph> clause lets you change the name of an existing table, and optionally which
+      database it is located in.
+    </p>
+
+    <p>
+      For internal tables, his operation physically renames the directory within HDFS that contains the data files;
+      the original directory name no longer exists. By qualifying the table names with database names, you can use
+      this technique to move an internal table (and its associated data directory) from one database to another.
+      For example:
+    </p>
+
+<codeblock>create database d1;
+create database d2;
+create database d3;
+use d1;
+create table mobile (x int);
+use d2;
+-- Move table from another database to the current one.
+alter table d1.mobile rename to mobile;
+use d1;
+-- Move table from one database to another.
+alter table d2.mobile rename to d3.mobile;</codeblock>
+
+    <p>
+      For external tables,
+    </p>
+
+    <p>
+      <b>To change the physical location where Impala looks for data files associated with a table or
+      partition:</b>
+    </p>
+
+<codeblock>ALTER TABLE <varname>table_name</varname> [PARTITION (<varname>partition_spec</varname>)] SET LOCATION '<varname>hdfs_path_of_directory</varname>';</codeblock>
+
+    <p>
+      The path you specify is the full HDFS path where the data files reside, or will be created. Impala does not
+      create any additional subdirectory named after the table. Impala does not move any data files to this new
+      location or change any data files that might already exist in that directory.
+    </p>
+
+    <p>
+      To set the location for a single partition, include the <codeph>PARTITION</codeph> clause. Specify all the
+      same partitioning columns for the table, with a constant value for each, to precisely identify the single
+      partition affected by the statement:
+    </p>
+
+<codeblock>create table p1 (s string) partitioned by (month int, day int);
+-- Each ADD PARTITION clause creates a subdirectory in HDFS.
+alter table p1 add partition (month=1, day=1);
+alter table p1 add partition (month=1, day=2);
+alter table p1 add partition (month=2, day=1);
+alter table p1 add partition (month=2, day=2);
+-- Redirect queries, INSERT, and LOAD DATA for one partition
+-- to a specific different directory.
+alter table p1 partition (month=1, day=1) set location '/usr/external_data/new_years_day';
+</codeblock>
+
+    <note conref="../shared/impala_common.xml#common/add_partition_set_location"/>
+
+    <p rev="1.2">
+      <b>To change the key-value pairs of the TBLPROPERTIES and SERDEPROPERTIES fields:</b>
+    </p>
+
+<codeblock>ALTER TABLE <varname>table_name</varname> SET TBLPROPERTIES ('<varname>key1</varname>'='<varname>value1</varname>', '<varname>key2</varname>'='<varname>value2</varname>'[, ...]);
+ALTER TABLE <varname>table_name</varname> SET SERDEPROPERTIES ('<varname>key1</varname>'='<varname>value1</varname>', '<varname>key2</varname>'='<varname>value2</varname>'[, ...]);</codeblock>
+
+    <p>
+      The <codeph>TBLPROPERTIES</codeph> clause is primarily a way to associate arbitrary user-specified data items
+      with a particular table.
+    </p>
+
+    <p>
+      The <codeph>SERDEPROPERTIES</codeph> clause sets up metadata defining how tables are read or written, needed
+      in some cases by Hive but not used extensively by Impala. You would use this clause primarily to change the
+      delimiter in an existing text table or partition, by setting the <codeph>'serialization.format'</codeph> and
+      <codeph>'field.delim'</codeph> property values to the new delimiter character:
+    </p>
+
+<codeblock>-- This table begins life as pipe-separated text format.
+create table change_to_csv (s1 string, s2 string) row format delimited fields terminated by '|';
+-- Then we change it to a CSV table.
+alter table change_to_csv set SERDEPROPERTIES ('serialization.format'=',', 'field.delim'=',');
+insert overwrite change_to_csv values ('stop','go'), ('yes','no');
+!hdfs dfs -cat 'hdfs://<varname>hostname</varname>:8020/<varname>data_directory</varname>/<varname>dbname</varname>.db/change_to_csv/<varname>data_file</varname>';
+stop,go
+yes,no</codeblock>
+
+    <p>
+      Use the <codeph>DESCRIBE FORMATTED</codeph> statement to see the current values of these properties for an
+      existing table. See <xref href="impala_create_table.xml#create_table"/> for more details about these clauses.
+      See <xref href="impala_perf_stats.xml#perf_stats_manual"/> for an example of using table properties to
+      fine-tune the performance-related table statistics.
+    </p>
+
+    <p>
+      <b>To reorganize columns for a table:</b>
+    </p>
+
+<codeblock>ALTER TABLE <varname>table_name</varname> ADD COLUMNS (<varname>column_defs</varname>);
+ALTER TABLE <varname>table_name</varname> REPLACE COLUMNS (<varname>column_defs</varname>);
+ALTER TABLE <varname>table_name</varname> CHANGE <varname>column_name</varname> <varname>new_name</varname> <varname>new_type</varname>;
+ALTER TABLE <varname>table_name</varname> DROP <varname>column_name</varname>;</codeblock>
+
+    <p>
+      The <varname>column_spec</varname> is the same as in the <codeph>CREATE TABLE</codeph> statement: the column
+      name, then its data type, then an optional comment. You can add multiple columns at a time. The parentheses
+      are required whether you add a single column or multiple columns. When you replace columns, all the original
+      column definitions are discarded. You might use this technique if you receive a new set of data files with
+      different data types or columns in a different order. (The data files are retained, so if the new columns are
+      incompatible with the old ones, use <codeph>INSERT OVERWRITE</codeph> or <codeph>LOAD DATA OVERWRITE</codeph>
+      to replace all the data before issuing any further queries.)
+    </p>
+
+    <p>
+      You might use the <codeph>CHANGE</codeph> clause to rename a single column, or to treat an existing column as
+      a different type than before, such as to switch between treating a column as <codeph>STRING</codeph> and
+      <codeph>TIMESTAMP</codeph>, or between <codeph>INT</codeph> and <codeph>BIGINT</codeph>. You can only drop a
+      single column at a time; to drop multiple columns, issue multiple <codeph>ALTER TABLE</codeph> statements, or
+      define the new set of columns with a single <codeph>ALTER TABLE ... REPLACE COLUMNS</codeph> statement.
+    </p>
+
+    <p>
+      <b>To change the file format that Impala expects data to be in, for a table or partition:</b>
+    </p>
+
+    <p>
+      Use an <codeph>ALTER TABLE ... SET FILEFORMAT</codeph> clause. You can include an optional <codeph>PARTITION
+      (<varname>col1</varname>=<varname>val1</varname>, <varname>col2</varname>=<varname>val2</varname>,
+      ...</codeph> clause so that the file format is changed for a specific partition rather than the entire table.
+    </p>
+
+    <p>
+      Because this operation only changes the table metadata, you must do any conversion of existing data using
+      regular Hadoop techniques outside of Impala. Any new data created by the Impala <codeph>INSERT</codeph>
+      statement will be in the new format. You cannot specify the delimiter for Text files; the data files must be
+      comma-delimited.
+<!-- Although Impala can read Avro tables
+        created through Hive, you cannot specify the Avro file format in an Impala
+        <codeph>ALTER TABLE</codeph> statement. -->
+    </p>
+
+    <p>
+      To set the file format for a single partition, include the <codeph>PARTITION</codeph> clause. Specify all the
+      same partitioning columns for the table, with a constant value for each, to precisely identify the single
+      partition affected by the statement:
+    </p>
+
+<codeblock>create table p1 (s string) partitioned by (month int, day int);
+-- Each ADD PARTITION clause creates a subdirectory in HDFS.
+alter table p1 add partition (month=1, day=1);
+alter table p1 add partition (month=1, day=2);
+alter table p1 add partition (month=2, day=1);
+alter table p1 add partition (month=2, day=2);
+-- Queries and INSERT statements will read and write files
+-- in this format for this specific partition.
+alter table p1 partition (month=2, day=2) set fileformat parquet;
+</codeblock>
+
+    <p>
+      <b>To add or drop partitions for a table</b>, the table must already be partitioned (that is, created with a
+      <codeph>PARTITIONED BY</codeph> clause). The partition is a physical directory in HDFS, with a name that
+      encodes a particular column value (the <b>partition key</b>). The Impala <codeph>INSERT</codeph> statement
+      already creates the partition if necessary, so the <codeph>ALTER TABLE ... ADD PARTITION</codeph> is
+      primarily useful for importing data by moving or copying existing data files into the HDFS directory
+      corresponding to a partition. (You can use the <codeph>LOAD DATA</codeph> statement to move files into the
+      partition directory, or <codeph>ALTER TABLE ... PARTITION (...) SET LOCATION</codeph> to point a partition at
+      a directory that already contains data files.
+    </p>
+
+    <p>
+      The <codeph>DROP PARTITION</codeph> clause is used to remove the HDFS directory and associated data files for
+      a particular set of partition key values; for example, if you always analyze the last 3 months worth of data,
+      at the beginning of each month you might drop the oldest partition that is no longer needed. Removing
+      partitions reduces the amount of metadata associated with the table and the complexity of calculating the
+      optimal query plan, which can simplify and speed up queries on partitioned tables, particularly join queries.
+      Here is an example showing the <codeph>ADD PARTITION</codeph> and <codeph>DROP PARTITION</codeph> clauses.
+    </p>
+
+    <p rev="2.3.0">
+      The optional <codeph>PURGE</codeph> keyword, available in CDH 5.5 / Impala 2.3 and higher,
+      is used with the <codeph>DROP PARTITION</codeph> clause to remove associated HDFS data files
+      immediately rather than going through the HDFS trashcan mechanism.
+      Use this keyword when dropping a partition if it is
+      crucial to remove the data as quickly as possible to free up space, or if there is a problem with
+      the trashcan, such as the trashcan not being configured or being in a different HDFS encryption zone
+      than the data files.
+    </p>
+
+    <draft-comment translate="no">
+        Make example more general by partitioning by year/month/day.
+        Then could show inserting into fixed year, variable month and day;
+        dropping particular year/month/day partition.
+      </draft-comment>
+
+<codeblock>-- Create an empty table and define the partitioning scheme.
+create table part_t (x int) partitioned by (month int);
+-- Create an empty partition into which you could copy data files from some other source.
+alter table part_t add partition (month=1);
+-- After changing the underlying data, issue a REFRESH statement to make the data visible in Impala.
+refresh part_t;
+-- Later, do the same for the next month.
+alter table part_t add partition (month=2);
+
+-- Now you no longer need the older data.
+alter table part_t drop partition (month=1);
+-- If the table was partitioned by month and year, you would issue a statement like:
+-- alter table part_t drop partition (year=2003,month=1);
+-- which would require 12 ALTER TABLE statements to remove a year's worth of data.
+
+-- If the data files for subsequent months were in a different file format,
+-- you could set a different file format for the new partition as you create it.
+alter table part_t add partition (month=3) set fileformat=parquet;
+</codeblock>
+
+    <p>
+      The value specified for a partition key can be an arbitrary constant expression, without any references to
+      columns. For example:
+    </p>
+
+<codeblock>alter table time_data add partition (month=concat('Decem','ber'));
+alter table sales_data add partition (zipcode = cast(9021 * 10 as string));</codeblock>
+
+    <note>
+      <p>
+        An alternative way to reorganize a table and its associated data files is to use <codeph>CREATE
+        TABLE</codeph> to create a variation of the original table, then use <codeph>INSERT</codeph> to copy the
+        transformed or reordered data to the new table. The advantage of <codeph>ALTER TABLE</codeph> is that it
+        avoids making a duplicate copy of the data files, allowing you to reorganize huge volumes of data in a
+        space-efficient way using familiar Hadoop techniques.
+      </p>
+    </note>
+
+    <p>
+      <b>To switch a table between internal and external:</b>
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/switch_internal_external_table"/>
+
+    <p conref="../shared/impala_common.xml#common/cancel_blurb_no"/>
+
+    <p conref="../shared/impala_common.xml#common/permissions_blurb"/>
+    <p rev="CDH-19187">
+      Most <codeph>ALTER TABLE</codeph> clauses do not actually
+      read or write any HDFS files, and so do not depend on
+      specific HDFS permissions. For example, the <codeph>SET FILEFORMAT</codeph>
+      clause does not actually check the file format existing data files or
+      convert them to the new format, and the <codeph>SET LOCATION</codeph> clause
+      does not require any special permissions on the new location.
+      (Any permission-related failures would come later, when you
+      actually query or insert into the table.)
+    </p>
+<!-- Haven't rigorously tested all the assertions in the following paragraph. -->
+<!-- Most testing so far has been around RENAME TO clause. -->
+    <p>
+      In general, <codeph>ALTER TABLE</codeph> clauses that do touch
+      HDFS files and directories require the same HDFS permissions
+      as corresponding <codeph>CREATE</codeph>, <codeph>INSERT</codeph>,
+      or <codeph>SELECT</codeph> statements.
+      The permissions allow
+      the user ID that the <cmdname>impalad</cmdname> daemon runs under,
+      typically the <codeph>impala</codeph> user, to read or write
+      files or directories, or (in the case of the execute bit) descend into a directory.
+      The <codeph>RENAME TO</codeph> clause requires read, write, and execute permission in the
+      source and destination database directories and in the table data directory,
+      and read and write permission for the data files within the table.
+      The <codeph>ADD PARTITION</codeph> and <codeph>DROP PARTITION</codeph> clauses
+      require write and execute permissions for the associated partition directory.
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/related_info"/>
+
+    <p>
+      <xref href="impala_tables.xml#tables"/>,
+      <xref href="impala_create_table.xml#create_table"/>, <xref href="impala_drop_table.xml#drop_table"/>,
+      <xref href="impala_partitioning.xml#partitioning"/>, <xref href="impala_tables.xml#internal_tables"/>,
+      <xref href="impala_tables.xml#external_tables"/>
+    </p>
+  </conbody>
+</concept>

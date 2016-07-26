@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE concept PUBLIC "-//OASIS//DTD DITA Concept//EN" "concept.dtd">
+<concept id="refresh">
+
+  <title>REFRESH Statement</title>
+  <titlealts><navtitle>REFRESH</navtitle></titlealts>
+  <prolog>
+    <metadata>
+      <data name="Category" value="Impala"/>
+      <data name="Category" value="SQL"/>
+      <data name="Category" value="DDL"/>
+      <data name="Category" value="Tables"/>
+      <data name="Category" value="Hive"/>
+      <data name="Category" value="Metastore"/>
+      <data name="Category" value="ETL"/>
+      <data name="Category" value="Ingest"/>
+    </metadata>
+  </prolog>
+
+  <conbody>
+
+    <p>
+      <indexterm audience="Cloudera">REFRESH statement</indexterm>
+      To accurately respond to queries, the Impala node that acts as the coordinator (the node to which you are
+      connected through <cmdname>impala-shell</cmdname>, JDBC, or ODBC) must have current metadata about those
+      databases and tables that are referenced in Impala queries. If you are not familiar with the way Impala uses
+      metadata and how it shares the same metastore database as Hive, see
+      <xref href="impala_hadoop.xml#intro_metastore"/> for background information.
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/syntax_blurb"/>
+
+<codeblock>REFRESH [<varname>db_name</varname>.]<varname>table_name</varname></codeblock>
+
+    <p conref="../shared/impala_common.xml#common/usage_notes_blurb"/>
+
+    <p>
+      Use the <codeph>REFRESH</codeph> statement to load the latest metastore metadata and block location data for
+      a particular table in these scenarios:
+    </p>
+
+    <ul>
+      <li>
+        After loading new data files into the HDFS data directory for the table. (Once you have set up an ETL
+        pipeline to bring data into Impala on a regular basis, this is typically the most frequent reason why
+        metadata needs to be refreshed.)
+      </li>
+
+      <li>
+        After issuing <codeph>ALTER TABLE</codeph>, <codeph>INSERT</codeph>, <codeph>LOAD DATA</codeph>, or other
+        table-modifying SQL statement in Hive.
+      </li>
+    </ul>
+
+    <p>
+      You only need to issue the <codeph>REFRESH</codeph> statement on the node to which you connect to issue
+      queries. The coordinator node divides the work among all the Impala nodes in a cluster, and sends read
+      requests for the correct HDFS blocks without relying on the metadata on the other nodes.
+    </p>
+
+    <p>
+      <codeph>REFRESH</codeph> reloads the metadata for the table from the metastore database, and does an
+      incremental reload of the low-level block location data to account for any new data files added to the HDFS
+      data directory for the table. It is a low-overhead, single-table operation, specifically tuned for the common
+      scenario where new data files are added to HDFS.
+    </p>
+
+    <p>
+      Only the metadata for the specified table is flushed. The table must already exist and be known to Impala,
+      either because the <codeph>CREATE TABLE</codeph> statement was run in Impala rather than Hive, or because a
+      previous <codeph>INVALIDATE METADATA</codeph> statement caused Impala to reload its entire metadata catalog.
+    </p>
+
+    <note>
+      <p rev="1.2">
+        In Impala 1.2 and higher, the catalog service broadcasts any changed metadata as a result of Impala
+        <codeph>ALTER TABLE</codeph>, <codeph>INSERT</codeph> and <codeph>LOAD DATA</codeph> statements to all
+        Impala nodes. Thus, the <codeph>REFRESH</codeph> statement is only required if you load data through Hive
+        or by manipulating data files in HDFS directly. See <xref href="impala_components.xml#intro_catalogd"/> for
+        more information on the catalog service.
+      </p>
+      <p rev="1.2.1">
+        In Impala 1.2.1 and higher, another way to avoid inconsistency across nodes is to enable the
+        <codeph>SYNC_DDL</codeph> query option before performing a DDL statement or an <codeph>INSERT</codeph> or
+        <codeph>LOAD DATA</codeph>.
+      </p>
+      <p>
+        The functionality of the <codeph>REFRESH</codeph> statement has changed in Impala 1.1 and higher. Now the
+        table name is a required parameter. To flush the metadata for all tables, use the
+        <codeph><xref href="impala_invalidate_metadata.xml#invalidate_metadata">INVALIDATE METADATA</xref></codeph>
+        command.
+      </p>
+      <draft-comment translate="no"> Almost-identical wording here, under INVALIDATE METADATA, and in Release Notes :: New Features. Makes sense to conref. </draft-comment>
+      <p>
+        Because <codeph>REFRESH <varname>table_name</varname></codeph> only works for tables that Impala is already
+        aware of, when you create a new table in the Hive shell, you must enter <codeph>INVALIDATE
+        METADATA</codeph> with no table parameter before you can see the new table in
+        <cmdname>impala-shell</cmdname>. Once the table is known to Impala, you can issue <codeph>REFRESH
+        <varname>table_name</varname></codeph> as needed after you add more data files for that table.
+      </p>
+    </note>
+
+    <p conref="../shared/impala_common.xml#common/refresh_vs_invalidate"/>
+
+    <p>
+      A metadata update for an <codeph>impalad</codeph> instance <b>is</b> required if:
+    </p>
+
+    <ul>
+      <li>
+        A metadata change occurs.
+      </li>
+
+      <li>
+        <b>and</b> the change is made through Hive.
+      </li>
+
+      <li>
+        <b>and</b> the change is made to a database to which clients such as the Impala shell or ODBC directly
+        connect.
+      </li>
+    </ul>
+
+    <p rev="1.2">
+      A metadata update for an Impala node is <b>not</b> required after you run <codeph>ALTER TABLE</codeph>,
+      <codeph>INSERT</codeph>, or other table-modifying statement in Impala rather than Hive. Impala handles the
+      metadata synchronization automatically through the catalog service.
+    </p>
+
+    <p>
+      Database and table metadata is typically modified by:
+    </p>
+
+    <ul>
+      <li>
+        Hive - through <codeph>ALTER</codeph>, <codeph>CREATE</codeph>, <codeph>DROP</codeph> or
+        <codeph>INSERT</codeph> operations.
+      </li>
+
+      <li>
+        Impalad - through <codeph>CREATE TABLE</codeph>, <codeph>ALTER TABLE</codeph>, and <codeph>INSERT</codeph>
+        operations. <ph rev="1.2">In Impala 1.2 and higher, such changes are propagated to all Impala nodes by the
+        Impala catalog service.</ph>
+      </li>
+    </ul>
+
+    <p>
+      <codeph>REFRESH</codeph> causes the metadata for that table to be immediately reloaded. For a huge table,
+      that process could take a noticeable amount of time; but doing the refresh up front avoids an unpredictable
+      delay later, for example if the next reference to the table is during a benchmark test.
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/sync_ddl_blurb"/>
+
+    <p conref="../shared/impala_common.xml#common/example_blurb"/>
+
+    <p conref="../shared/impala_common.xml#common/example_blurb"/>
+
+    <p>
+      The following example shows how you might use the <codeph>REFRESH</codeph> statement after manually adding
+      new HDFS data files to the Impala data directory for a table:
+    </p>
+
+<codeblock>[impalad-host:21000] &gt; refresh t1;
+[impalad-host:21000] &gt; refresh t2;
+[impalad-host:21000] &gt; select * from t1;
+...
+[impalad-host:21000] &gt; select * from t2;
+... </codeblock>
+
+    <p>
+      For more examples of using <codeph>REFRESH</codeph> and <codeph>INVALIDATE METADATA</codeph> with a
+      combination of Impala and Hive operations, see <xref href="impala_tutorial.xml#tutorial_impala_hive"/>.
+    </p>
+
+    <p>
+      <b>Related impalad options:</b>
+    </p>
+
+    <p>
+      In Impala 1.0, the <codeph>-r</codeph> option of <cmdname>impala-shell</cmdname> issued
+      <codeph>REFRESH</codeph> to reload metadata for all tables.
+    </p>
+
+    <p>
+      In Impala 1.1 and higher, this option issues <codeph>INVALIDATE METADATA</codeph> because
+      <codeph>REFRESH</codeph> now requires a table name parameter. Due to the expense of reloading the metadata
+      for all tables, the <cmdname>impala-shell</cmdname> <codeph>-r</codeph> option is not recommended for
+      day-to-day use in a production environment.
+    </p>
+
+    <p rev="1.2">
+      In Impala 1.2 and higher, the <codeph>-r</codeph> option is needed even less frequently, because metadata
+      changes caused by SQL statements in Impala are automatically broadcast to all Impala nodes.
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/permissions_blurb"/>
+    <p rev="CDH-19187">
+      The user ID that the <cmdname>impalad</cmdname> daemon runs under,
+      typically the <codeph>impala</codeph> user, must have execute
+      permissions for all the relevant directories holding table data.
+      (A table could have data spread across multiple directories,
+      or in unexpected paths, if it uses partitioning or
+      specifies a <codeph>LOCATION</codeph> attribute for
+      individual partitions or the entire table.)
+      Issues with permissions might not cause an immediate error for this statement,
+      but subsequent statements such as <codeph>SELECT</codeph>
+      or <codeph>SHOW TABLE STATS</codeph> could fail.
+    </p>
+
+    <p conref="../shared/impala_common.xml#common/hdfs_blurb"/>
+
+    <p>
+      The <codeph>REFRESH</codeph> command checks HDFS permissions of the underlying data files and directories,
+      caching this information so that a statement can be cancelled immediately if for example the
+      <codeph>impala</codeph> user does not have permission to write to the data directory for the table. Impala
+      reports any lack of write permissions as an <codeph>INFO</codeph> message in the log file, in case that
+      represents an oversight. If you change HDFS permissions to make data readable or writeable by the Impala
+      user, issue another <codeph>REFRESH</codeph> to make Impala aware of the change.
+    </p>
+
+    <note conref="../shared/impala_common.xml#common/compute_stats_next"/>
+
+    <p conref="../shared/impala_common.xml#common/s3_blurb"/>
+    <p conref="../shared/impala_common.xml#common/s3_metadata"/>
+
+    <p conref="../shared/impala_common.xml#common/cancel_blurb_no"/>
+    <p conref="../shared/impala_common.xml#common/related_info"/>
+    <p>
+      <xref href="impala_hadoop.xml#intro_metastore"/>,
+      <xref href="impala_invalidate_metadata.xml#invalidate_metadata"/>
+    </p>
+  </conbody>
+</concept>

@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE concept PUBLIC "-//OASIS//DTD DITA Concept//EN" "concept.dtd">
+<concept id="misc_functions">
+
+  <title>Impala Miscellaneous Functions</title>
+  <titlealts><navtitle>Miscellaneous Functions</navtitle></titlealts>
+  <prolog>
+    <metadata>
+      <data name="Category" value="Impala"/>
+      <data name="Category" value="Impala Functions"/>
+      <data name="Category" value="SQL"/>
+      <data name="Category" value="Data Analysts"/>
+      <data name="Category" value="Developers"/>
+      <data name="Category" value="Querying"/>
+    </metadata>
+  </prolog>
+
+  <conbody>
+
+    <p>
+      Impala supports the following utility functions that do not operate on a particular column or data type:
+    </p>
+
+    <dl>
+      <dlentry rev="1.3.0" id="current_database">
+
+        <dt>
+          <codeph>current_database()</codeph>
+        </dt>
+
+        <dd>
+          <indexterm audience="Cloudera">current_database() function</indexterm>
+          <b>Purpose:</b> Returns the database that the session is currently using, either <codeph>default</codeph>
+          if no database has been selected, or whatever database the session switched to through a
+          <codeph>USE</codeph> statement or the <cmdname>impalad</cmdname><codeph>-d</codeph> option.
+          <p>
+            <b>Return type:</b> <codeph>string</codeph>
+          </p>
+        </dd>
+
+      </dlentry>
+
+      <dlentry rev="5.4.5" id="effective_user">
+
+        <dt>
+          <codeph>effective_user()</codeph>
+        </dt>
+
+        <dd>
+          <indexterm audience="Cloudera">effective_user() function</indexterm>
+          <b>Purpose:</b> Typically returns the same value as <codeph>user()</codeph>,
+          except if delegation is enabled, in which case it returns the ID of the delegated user.
+          <p>
+            <b>Return type:</b> <codeph>string</codeph>
+          </p>
+          <p>
+            <b>Added in:</b> CDH 5.4.5
+          </p>
+        </dd>
+
+      </dlentry>
+
+      <dlentry rev="1.3.0" id="pid">
+
+        <dt>
+          <codeph>pid()</codeph>
+        </dt>
+
+        <dd>
+          <indexterm audience="Cloudera">pid() function</indexterm>
+          <b>Purpose:</b> Returns the process ID of the <cmdname>impalad</cmdname> daemon that the session is
+          connected to. You can use it during low-level debugging, to issue Linux commands that trace, show the
+          arguments, and so on the <cmdname>impalad</cmdname> process.
+          <p>
+            <b>Return type:</b> <codeph>int</codeph>
+          </p>
+        </dd>
+
+      </dlentry>
+
+      <dlentry audience="Cloudera" id="sleep">
+
+        <dt>
+          <codeph>sleep(int ms)</codeph>
+        </dt>
+
+        <dd>
+          <indexterm audience="Cloudera">sleep() function</indexterm>
+          <b>Purpose:</b> Pauses the query for a specified number of milliseconds. For slowing down queries with
+          small result sets enough to monitor runtime execution, memory usage, or other factors that otherwise
+          would be difficult to capture during the brief interval of query execution. When used in the
+          <codeph>SELECT</codeph> list, it is called once for each row in the result set; adjust the number of
+          milliseconds accordingly. For example, a query <codeph>SELECT *, sleep(5) FROM
+          table_with_1000_rows</codeph> would take at least 5 seconds to complete (5 milliseconds * 1000 rows in
+          result set). To avoid an excessive number of concurrent queries, use this function for troubleshooting on
+          test and development systems, not for production queries.
+          <p>
+            <b>Return type:</b> N/A
+          </p>
+        </dd>
+
+      </dlentry>
+
+      <dlentry rev="1.1" id="user">
+
+        <dt>
+          <codeph>user()</codeph>
+        </dt>
+
+        <dd>
+          <indexterm audience="Cloudera">user() function</indexterm>
+          <b>Purpose:</b> Returns the username of the Linux user who is connected to the <cmdname>impalad</cmdname>
+          daemon. Typically called a single time, in a query without any <codeph>FROM</codeph> clause, to
+          understand how authorization settings apply in a security context; once you know the logged-in user name,
+          you can check which groups that user belongs to, and from the list of groups you can check which roles
+          are available to those groups through the authorization policy file.
+          <p conref="../shared/impala_common.xml#common/user_kerberized"/>
+          <p>
+            When delegation is enabled, consider calling the <codeph>effective_user()</codeph> function instead.
+          </p>
+          <p>
+            <b>Return type:</b> <codeph>string</codeph>
+          </p>
+        </dd>
+
+      </dlentry>
+
+      <dlentry id="version">
+
+        <dt>
+          <codeph>version()</codeph>
+        </dt>
+
+        <dd>
+          <indexterm audience="Cloudera">version() function</indexterm>
+          <b>Purpose:</b> Returns information such as the precise version number and build date for the
+          <codeph>impalad</codeph> daemon that you are currently connected to. Typically used to confirm that you
+          are connected to the expected level of Impala to use a particular feature, or to connect to several nodes
+          and confirm they are all running the same level of <cmdname>impalad</cmdname>.
+          <p>
+            <b>Return type:</b> <codeph>string</codeph> (with one or more embedded newlines)
+          </p>
+        </dd>
+
+      </dlentry>
+    </dl>
+  </conbody>
+</concept>

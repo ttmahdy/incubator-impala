@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE concept PUBLIC "-//OASIS//DTD DITA Concept//EN" "concept.dtd">
+<concept rev="1.3.0" id="request_pool">
+
+  <title>REQUEST_POOL Query Option</title>
+  <prolog>
+    <metadata>
+      <data name="Category" value="Impala"/>
+      <data name="Category" value="Resource Management"/>
+      <data name="Category" value="Impala Query Options"/>
+      <data name="Category" value="Admission Control"/>
+      <data name="Category" value="YARN"/>
+      <data name="Category" value="Llama"/>
+    </metadata>
+  </prolog>
+
+  <conbody>
+
+    <p>
+      <indexterm audience="Cloudera">REQUEST_POOL query option</indexterm>
+      The pool or queue name that queries should be submitted to. Only applies when you enable the Impala admission
+      control feature (CDH 4 or CDH 5; see <xref href="impala_admission.xml#admission_control"/>), or the YARN
+      resource management feature (CDH 5 only; see
+      <xref href="impala_resource_management.xml#resource_management"/>). Specifies the name of the pool used by
+      requests from Impala to the resource manager.
+    </p>
+
+    <p>
+      Formerly known as <codeph>YARN_POOL</codeph> during the CDH 5 beta period. Renamed to reflect that it can be
+      used both with YARN and with the lightweight admission control feature introduced in Impala 1.3.
+    </p>
+
+    <p>
+      <b>Type:</b> <codeph>STRING</codeph>
+    </p>
+
+    <p>
+      <b>Default:</b> empty (use the user-to-pool mapping defined by an <cmdname>impalad</cmdname> startup option
+      in the Impala configuration file)
+    </p>
+
+<!-- Worth adding a couple of related info links here. -->
+
+  </conbody>
+</concept>
