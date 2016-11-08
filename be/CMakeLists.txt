@@ -172,6 +172,12 @@ set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ${RULE_LAUNCH_PREFIX})
 # Thrift requires these definitions for some types that we use
 add_definitions(-DHAVE_INTTYPES_H -DHAVE_NETINET_IN_H -DHAVE_NETDB_H)
 
+# Kudu flags. 1. Enable non KUDU_* prefixes for status macros to allow Kudu code to
+# compile without changing the macro. 2. Enable full support for all backing types of
+# kudu::Slices. 3. Don't include stubs.h
+add_definitions(-DKUDU_HEADERS_USE_SHORT_STATUS_MACROS -DKUDU_HEADERS_USE_RICH_SLICE
+  -DKUDU_HEADERS_NO_STUBS)
+
 # Set clang flags for cross-compiling to IR.
 # IR_COMPILE is #defined for the cross compile to remove code that bloats the IR.
 # We enable basic optimizations (-O1) to reduce the IR size and speed up runtime JIT.
@@ -315,6 +321,7 @@ set (IMPALA_LINK_LIBS
   Exprs
   GlobalFlags
   ImpalaThrift
+  kudu_util
   Rpc
   Runtime
   Scheduling
@@ -469,6 +476,7 @@ add_subdirectory(src/codegen)
 add_subdirectory(src/common)
 add_subdirectory(src/exec)
 add_subdirectory(src/exprs)
+add_subdirectory(src/kudu/util)
 add_subdirectory(src/runtime)
 add_subdirectory(src/scheduling)
 add_subdirectory(src/statestore)
