@@ -32,6 +32,7 @@ add_custom_target(common-proto-deps DEPENDS ${COMMON_PROTO_TGTS})
 add_library(Rpc
   authentication.cc
   ${COMMON_PROTO_SRCS}
+  impala-service-pool.cc
   rpc-mgr.cc
   rpc-trace.cc
   TAcceptQueueServer.cpp

@@ -76,7 +76,8 @@ int ImpaladMain(int argc, char** argv) {
   ExecEnv* exec_env = new ExecEnv();
   ABORT_IF_ERROR(exec_env->Init());
   StartThreadInstrumentation(exec_env->metrics(), exec_env->webserver(), true);
-  InitRpcEventTracing(exec_env->webserver());
+
+  InitRpcEventTracing(exec_env->webserver(), exec_env->rpc_mgr());
   ABORT_IF_ERROR(ExternalDataSourceExecutor::InitJNI(exec_env->metrics()));
 
   boost::shared_ptr<ImpalaServer> impala_server(new ImpalaServer(exec_env));

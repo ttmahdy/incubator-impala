@@ -121,6 +121,8 @@ class Statestore : public CacheLineAligned {
 
   std::set<SubscriberId> GetActiveSubscribersForTesting();
 
+  RpcMgr* rpc_mgr() { return &rpc_mgr_; }
+
  private:
   /// A TopicEntry is a single entry in a topic, and logically is a <string, byte string>
   /// pair. If the byte string is NULL, the entry has been deleted, but may be retained to

@@ -22,6 +22,8 @@
 #include "util/metrics.h"
 #include "util/spinlock.h"
 
+#include "rapidjson/document.h"
+
 namespace impala {
 
 /// Metric which constructs (using HdrHistogram) a histogram of a set of values.

@@ -18,6 +18,68 @@ under the License.
 -->
 {{> www/common-header.tmpl }}
 
+<h2>KRPC Services</h2>
+
+<table class='table table-hover table-bordered'>
+  <thead>
+    <tr>
+      <th></th>
+      <th>Count</th>
+      <th>Min</th>
+      <th>Max</th>
+      <th>50th %-ile</th>
+      <th>75th %-ile</th>
+      <th>99.9th %-ile</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{#services}}
+    <tr><td><kbd>Service: {{name}}</kbd></td></tr>
+    <tr>
+      <td>Queuing time (ms)</td>
+      {{#rpc_queue_time_histogram}}
+      <td>{{count}}</td>
+      <td>{{min}}ms</td>
+      <td>{{max}}ms</td>
+      <td>{{50th %-ile}}ms</td>
+      <td>{{75th %-ile}}ms</td>
+      <td>{{"99.9th %-ile"}}ms</td>
+      {{/rpc_queue_time_histogram}}
+    </tr>
+    {{#methods}}
+    <tr><td colspan=7><strong><tt>Method: {{name}}</tt></strong></td>
+    </tr>
+    <tr>
+      <td>Handling time (ms)</td>
+      <td>{{handling_histogram.count}} ({{num_in_handlers}})</td>
+      {{#handling_histogram}}
+      <td>{{min}}ms</td>
+      <td>{{max}}ms</td>
+      <td>{{50th %-ile}}ms</td>
+      <td>{{75th %-ile}}ms</td>
+      <td>{{"99.9th %-ile"}}ms</td>
+      {{/handling_histogram}}
+    </tr>
+    <tr>
+      <td>Payload size (bytes)</td>
+      {{#payload_size_histogram}}
+      <td>{{count}}</td>
+      <td>{{min}}B</td>
+      <td>{{max}}B</td>
+      <td>{{50th %-ile}}B</td>
+      <td>{{75th %-ile}}B</td>
+      <td>{{"99.9th %-ile"}}B</td>
+      {{/payload_size_histogram}}
+    </tr>
+    {{/methods}}
+    <tr><td colspan=7></td></tr>
+    {{/services}}
+  </tbody>
+</table>
+
+
+<hr/>
+
 <h2>RPC durations
   <button class="btn btn-warning btn-xs" onClick="reset_all();">
     Reset all

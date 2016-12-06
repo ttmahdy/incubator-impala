@@ -22,6 +22,10 @@
 #include "kudu/rpc/rpc_header.pb.h"
 #include "kudu/rpc/service_pool.h"
 
+#include "rpc/impala-service-pool.h"
+
+#include <rapidjson/document.h>
+
 #include "common/status.h"
 
 namespace kudu {
@@ -32,6 +36,8 @@ class ResultTracker;
 }
 
 namespace impala {
+
+class Webserver;
 
 /// Central manager for all RPC services and proxies.
 ///
@@ -140,9 +146,11 @@ class RpcMgr {
         << "Must call UnregisterServices() before destroying RpcMgr";
   }
 
+  void ToJson(rapidjson::Document* document);
+
  private:
   /// One pool per registered service.
-  std::vector<scoped_refptr<kudu::rpc::ServicePool>> service_pools_;
+  std::vector<scoped_refptr<ImpalaServicePool>> service_pools_;
 
   /// Required Kudu boilerplate.
   /// TODO(KRPC): Integrate with Impala MetricGroup.

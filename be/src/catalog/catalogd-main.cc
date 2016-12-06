@@ -73,10 +73,11 @@ int CatalogdMain(int argc, char** argv) {
   ABORT_IF_ERROR(RegisterMemoryMetrics(metrics.get(), true, nullptr, nullptr));
   StartThreadInstrumentation(metrics.get(), webserver.get(), true);
 
-  InitRpcEventTracing(webserver.get());
   metrics->AddProperty<string>("catalog.version", GetVersionString(true));
 
   CatalogServer catalog_server(metrics.get());
+  InitRpcEventTracing(webserver.get(), catalog_server.rpc_mgr());
+
   ABORT_IF_ERROR(catalog_server.Start());
   catalog_server.RegisterWebpages(webserver.get());
   boost::shared_ptr<TProcessor> processor(

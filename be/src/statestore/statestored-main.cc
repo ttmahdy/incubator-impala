@@ -66,12 +66,12 @@ int StatestoredMain(int argc, char** argv) {
   metrics->Init(FLAGS_enable_webserver ? webserver.get() : nullptr);
   ABORT_IF_ERROR(RegisterMemoryMetrics(metrics.get(), false, nullptr, nullptr));
   StartThreadInstrumentation(metrics.get(), webserver.get(), false);
-  InitRpcEventTracing(webserver.get());
   // TODO: Add a 'common metrics' method to add standard metrics to
   // both statestored and impalad
   metrics->AddProperty<string>("statestore.version", GetVersionString(true));
 
   Statestore statestore(metrics.get());
+  InitRpcEventTracing(webserver.get(), statestore.rpc_mgr());
   statestore.RegisterWebpages(webserver.get());
   // TODO(KRPC): SSL?
   ABORT_IF_ERROR(statestore.Start());

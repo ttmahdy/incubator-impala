@@ -73,6 +73,7 @@ class CatalogServer {
     return thrift_iface_;
   }
   Catalog* catalog() const { return catalog_.get(); }
+  RpcMgr* rpc_mgr() { return &rpc_mgr_; }
 
  private:
   /// Thrift API implementation which proxies requests onto this CatalogService.

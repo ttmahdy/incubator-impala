@@ -22,6 +22,7 @@
 #include <gutil/strings/substitute.h>
 
 #include "common/logging.h"
+#include "rpc/rpc-mgr.h"
 #include "util/debug-util.h"
 #include "util/time.h"
 #include "util/webserver.h"
@@ -39,6 +40,8 @@ const string RPC_PROCESSING_TIME_DISTRIBUTION_METRIC_KEY = "rpc-method.$0.call_d
 // web-based summary page.
 class RpcEventHandlerManager {
  public:
+  RpcEventHandlerManager(RpcMgr* mgr) : rpc_mgr_(mgr) { }
+
   // Adds an event handler to the list of those tracked
   void RegisterEventHandler(RpcEventHandler* event_handler);
 
@@ -64,13 +67,15 @@ class RpcEventHandlerManager {
   // after they are started, event handlers have a lifetime equivalent to the length of
   // the process.
   vector<RpcEventHandler*> event_handlers_;
+
+  RpcMgr* rpc_mgr_;
 };
 
 // Only instance of RpcEventHandlerManager
 scoped_ptr<RpcEventHandlerManager> handler_manager;
 
-void impala::InitRpcEventTracing(Webserver* webserver) {
-  handler_manager.reset(new RpcEventHandlerManager());
+void impala::InitRpcEventTracing(Webserver* webserver, RpcMgr* mgr) {
+  handler_manager.reset(new RpcEventHandlerManager(mgr));
   if (webserver != NULL) {
     Webserver::UrlCallback json = bind<void>(
         mem_fn(&RpcEventHandlerManager::JsonCallback), handler_manager.get(), _1, _2);
@@ -98,6 +103,8 @@ void RpcEventHandlerManager::JsonCallback(const Webserver::ArgumentMap& args,
     servers.PushBack(server, document->GetAllocator());
   }
   document->AddMember("servers", servers, document->GetAllocator());
+
+  rpc_mgr_->ToJson(document);
 }
 
 void RpcEventHandlerManager::ResetCallback(const Webserver::ArgumentMap& args,
