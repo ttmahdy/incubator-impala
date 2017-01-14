@@ -20,7 +20,6 @@
 #include <boost/scoped_ptr.hpp>
 #include <stdlib.h>
 
-#include "statestore/statestore.h"
 #include "rpc/thrift-util.h"
 #include "rpc/thrift-server.h"
 #include "util/network-util.h"
@@ -131,49 +130,4 @@ Status InProcessImpalaServer::StartAsBackendOnly(bool use_statestore) {
 Status InProcessImpalaServer::Join() {
   be_server_->Join();
   return Status::OK();
-}
-
-InProcessStatestore* InProcessStatestore::StartWithEphemeralPorts() {
-  for (int tries = 0; tries < 10; ++tries) {
-    vector<int> used_ports;
-    int statestore_port = FindUnusedEphemeralPort(&used_ports);
-    if (statestore_port == -1) continue;
-
-    int webserver_port = FindUnusedEphemeralPort(&used_ports);
-    if (webserver_port == -1) continue;
-
-    InProcessStatestore* ips = new InProcessStatestore(statestore_port, webserver_port);
-    if (ips->Start().ok()) return ips;
-    delete ips;
-  }
-  DCHECK(false) << "Could not find port to start Statestore.";
-  return NULL;
-}
-
-InProcessStatestore::InProcessStatestore(int statestore_port, int webserver_port)
-    : webserver_(new Webserver(webserver_port)),
-      metrics_(new MetricGroup("statestore")),
-      statestore_port_(statestore_port),
-      statestore_(new Statestore(metrics_.get())) {
-  AddDefaultUrlCallbacks(webserver_.get());
-  statestore_->RegisterWebpages(webserver_.get());
-}
-
-Status InProcessStatestore::Start() {
-  webserver_->Start();
-  boost::shared_ptr<TProcessor> processor(
-      new StatestoreServiceProcessor(statestore_->thrift_iface()));
-
-  statestore_server_.reset(new ThriftServer("StatestoreService", processor,
-      statestore_port_, NULL, metrics_.get(), 5));
-  if (EnableInternalSslConnections()) {
-    LOG(INFO) << "Enabling SSL for Statestore";
-    ABORT_IF_ERROR(statestore_server_->EnableSsl(
-        FLAGS_ssl_server_certificate, FLAGS_ssl_private_key));
-  }
-  statestore_main_loop_.reset(
-      new Thread("statestore", "main-loop", &Statestore::MainLoop, statestore_.get()));
-
-  RETURN_IF_ERROR(statestore_server_->Start());
-  return WaitForServer("localhost", statestore_port_, 10, 100);
 }

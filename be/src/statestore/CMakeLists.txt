@@ -15,19 +15,27 @@
 # specific language governing permissions and limitations
 # under the License.
 
-
 # where to put generated libraries
 set(LIBRARY_OUTPUT_PATH "${BUILD_OUTPUT_ROOT_DIRECTORY}/statestore")
 
 # where to put generated binaries
 set(EXECUTABLE_OUTPUT_PATH "${BUILD_OUTPUT_ROOT_DIRECTORY}/statestore")
 
+KRPC_GENERATE(STATESTORE_SVC_PROTO_SRCS STATESTORE_SVC_PROTO_HDRS
+  STATESTORE_SVC_PROTO_TGTS
+  SOURCE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}
+  EXTRA_PROTO_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/../
+  PROTO_FILES statestore.proto)
+
+add_custom_target(statestore-proto-deps DEPENDS ${STATESTORE_SVC_PROTO_TGTS})
+
 add_library(Statestore
   failure-detector.cc
+  ${STATESTORE_SVC_PROTO_SRCS}
   statestore.cc
   statestore-subscriber.cc
   statestored-main.cc
 )
-add_dependencies(Statestore thrift-deps)
+add_dependencies(Statestore generated-deps)
 
 ADD_BE_TEST(statestore-test)

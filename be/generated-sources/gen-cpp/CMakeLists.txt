@@ -87,10 +87,8 @@ set(SRC_FILES
   parquet_types.cpp
   RuntimeProfile_constants.cpp
   RuntimeProfile_types.cpp
-  StatestoreService.cpp
   StatestoreService_constants.cpp
   StatestoreService_types.cpp
-  StatestoreSubscriber.cpp
   Status_constants.cpp
   Status_types.cpp
   Types_constants.cpp

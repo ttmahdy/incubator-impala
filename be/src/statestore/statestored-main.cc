@@ -73,22 +73,9 @@ int StatestoredMain(int argc, char** argv) {
 
   Statestore statestore(metrics.get());
   statestore.RegisterWebpages(webserver.get());
-  boost::shared_ptr<TProcessor> processor(
-      new StatestoreServiceProcessor(statestore.thrift_iface()));
-  boost::shared_ptr<TProcessorEventHandler> event_handler(
-      new RpcEventHandler("statestore", metrics.get()));
-  processor->setEventHandler(event_handler);
-
-  ThriftServer* server = new ThriftServer("StatestoreService", processor,
-      FLAGS_state_store_port, NULL, metrics.get(), 5);
-  if (EnableInternalSslConnections()) {
-    LOG(INFO) << "Enabling SSL for Statestore";
-    ABORT_IF_ERROR(server->EnableSsl(FLAGS_ssl_server_certificate, FLAGS_ssl_private_key,
-        FLAGS_ssl_private_key_password_cmd));
-  }
-  ABORT_IF_ERROR(server->Start());
-
-  statestore.MainLoop();
+  // TODO(KRPC): SSL?
+  ABORT_IF_ERROR(statestore.Start());
+  statestore.Join();
 
   return 0;
 }

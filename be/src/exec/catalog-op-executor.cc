@@ -22,16 +22,14 @@
 #include "common/status.h"
 #include "catalog/catalog-service-client-wrapper.h"
 #include "exec/incr-stats-util.h"
-#include "runtime/lib-cache.h"
 #include "runtime/client-cache-types.h"
+#include "runtime/client-cache.h"
 #include "runtime/exec-env.h"
-#include "service/impala-server.h"
+#include "runtime/lib-cache.h"
 #include "service/hs2-util.h"
-#include "util/string-parser.h"
+#include "service/impala-server.h"
 #include "util/runtime-profile-counters.h"
-#include "gen-cpp/CatalogService.h"
-#include "gen-cpp/CatalogService_types.h"
-#include "gen-cpp/CatalogObjects_types.h"
+#include "util/string-parser.h"
 
 #include <thrift/protocol/TDebugProtocol.h>
 #include <thrift/Thrift.h>

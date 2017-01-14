@@ -28,6 +28,8 @@ struct tm;
 #include "runtime/string-value.h"
 #include "runtime/types.h"
 
+#include "gutil/strings/substitute.h"
+
 namespace impala {
 
 /// Takes a Kudu status and returns an impala one, if it's not OK.
@@ -77,6 +79,13 @@ void LogKuduMessage(kudu::client::KuduLogSeverity severity, const char* filename
 /// is being used.
 Status WriteKuduValue(int col, PrimitiveType type, const void* value,
     bool copy_strings, kudu::KuduPartialRow* row);
+
+inline Status FromKuduStatus(
+    const kudu::Status& k_status, const std::string prepend = "") {
+  if (LIKELY(k_status.ok())) return Status::OK();
+  if (prepend.empty()) return Status(k_status.ToString());
+  return Status(strings::Substitute("$0: $1", prepend, k_status.ToString()));
+}
 
 } /// namespace impala
 #endif

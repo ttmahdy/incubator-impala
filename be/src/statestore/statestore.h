@@ -28,14 +28,10 @@
 #include <boost/unordered_map.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 
-#include "gen-cpp/StatestoreService.h"
-#include "gen-cpp/StatestoreSubscriber.h"
 #include "gen-cpp/Types_types.h"
-#include "rpc/thrift-client.h"
-#include "runtime/client-cache.h"
+#include "rpc/rpc-mgr.h"
 #include "runtime/timestamp-value.h"
 #include "statestore/failure-detector.h"
-#include "statestore/statestore-subscriber-client-wrapper.h"
 #include "util/aligned-new.h"
 #include "util/collection-metrics.h"
 #include "util/metrics.h"
@@ -45,8 +41,6 @@
 namespace impala {
 
 class Status;
-
-typedef ClientCache<StatestoreSubscriberClientWrapper> StatestoreSubscriberClientCache;
 
 /// The Statestore is a soft-state key-value store that maintains a set of Topics, which
 /// are maps from string keys to byte array values.
@@ -112,19 +106,20 @@ class Statestore : public CacheLineAligned {
 
   void RegisterWebpages(Webserver* webserver);
 
-  /// The main processing loop. Blocks until the exit flag is set.
+  /// Blocks until the exit flag is set. Does not call Start().
   //
   /// Returns OK unless there is an unrecoverable error.
-  Status MainLoop();
+  Status Join();
 
-  /// Returns the Thrift API interface that proxies requests onto the local Statestore.
-  const boost::shared_ptr<StatestoreServiceIf>& thrift_iface() const {
-    return thrift_iface_;
-  }
+  /// Starts this statestore and returns when it is running. After Start() returns,
+  /// subscribers may register with this statestore.
+  Status Start();
 
   /// Tells the Statestore to shut down. Does not wait for the processing loop to exit
   /// before returning.
   void SetExitFlag();
+
+  std::set<SubscriberId> GetActiveSubscribersForTesting();
 
  private:
   /// A TopicEntry is a single entry in a topic, and logically is a <string, byte string>
@@ -340,8 +335,8 @@ class Statestore : public CacheLineAligned {
     /// Subscriber on the topic.
     Topics subscribed_topics_;
 
-    /// List of updates made by this subscriber so that transient entries may be deleted on
-    /// failure.
+    /// List of updates made by this subscriber so that transient entries may be deleted
+    /// on failure.
     TransientEntryMap transient_entries_;
   };
 
@@ -349,10 +344,10 @@ class Statestore : public CacheLineAligned {
   /// topic_lock_.
   boost::mutex subscribers_lock_;
 
-  /// Map of subscribers currently connected; upon failure their entry is removed from this
-  /// map. Subscribers must only be removed by UnregisterSubscriber() which ensures that
-  /// the correct cleanup is done. If a subscriber re-registers, it must be unregistered
-  /// prior to re-entry into this map.
+  /// Map of subscribers currently connected; upon failure their entry is removed from
+  /// this map. Subscribers must only be removed by UnregisterSubscriber() which ensures
+  /// that the correct cleanup is done. If a subscriber re-registers, it must be
+  /// unregistered prior to re-entry into this map.
   //
   /// Subscribers are held in shared_ptrs so that RegisterSubscriber() may overwrite their
   /// entry in this map while UpdateSubscriber() tries to update an existing registration
@@ -374,18 +369,18 @@ class Statestore : public CacheLineAligned {
   /// state, and the other pool sends 'topic update' messages which contain the
   /// actual topic data that a subscriber does not yet have.
   //
-  /// Each message is scheduled for some time in the future and each worker thread
-  /// will sleep until that time has passed to rate-limit messages. Subscribers are
-  /// placed back into the queue once they have been processed. A subscriber may have many
-  /// entries in a queue, but no more than one for each registration associated with that
+  /// Each message is scheduled for some time in the future and each worker thread will
+  /// sleep until that time has passed to rate-limit messages. Subscribers are placed back
+  /// into the queue once they have been processed. A subscriber may have many entries in
+  /// a queue, but no more than one for each registration associated with that
   /// subscriber. Since at most one registration is considered 'live' per subscriber, this
-  /// guarantees that subscribers_.size() - 1 'live' subscribers ahead of any subscriber in
-  /// the queue.
+  /// guarantees that subscribers_.size() - 1 'live' subscribers ahead of any subscriber
+  /// in the queue.
   //
-  /// Messages may be delayed for any number of reasons, including scheduler
-  /// interference, lock unfairness when submitting to the thread pool and head-of-line
-  /// blocking when threads are occupied sending messages to slow subscribers
-  /// (subscribers are not guaranteed to be in the queue in next-update order).
+  /// Messages may be delayed for any number of reasons, including scheduler interference,
+  /// lock unfairness when submitting to the thread pool and head-of-line blocking when
+  /// threads are occupied sending messages to slow subscribers (subscribers are not
+  /// guaranteed to be in the queue in next-update order).
   //
   /// Delays for heartbeat messages can result in the subscriber that is kept waiting
   /// assuming that the statestore has failed. Correct configuration of heartbeat message
@@ -401,23 +396,13 @@ class Statestore : public CacheLineAligned {
 
   ThreadPool<ScheduledSubscriberUpdate> subscriber_heartbeat_threadpool_;
 
-  /// Cache of subscriber clients used for UpdateState() RPCs. Only one client per
-  /// subscriber should be used, but the cache helps with the client lifecycle on failure.
-  boost::scoped_ptr<StatestoreSubscriberClientCache> update_state_client_cache_;
-
-  /// Cache of subscriber clients used for Heartbeat() RPCs. Separate from
-  /// update_state_client_cache_ because we enable TCP-level timeouts for these calls,
-  /// whereas they are not safe for UpdateState() RPCs which can take an unbounded amount
-  /// of time.
-  boost::scoped_ptr<StatestoreSubscriberClientCache> heartbeat_client_cache_;
-
-  /// Thrift API implementation which proxies requests onto this Statestore
-  boost::shared_ptr<StatestoreServiceIf> thrift_iface_;
-
   /// Failure detector for subscribers. If a subscriber misses a configurable number of
   /// consecutive heartbeat messages, it is considered failed and a) its transient topic
   /// entries are removed and b) its entry in the subscriber map is erased.
   boost::scoped_ptr<MissedHeartbeatFailureDetector> failure_detector_;
+
+  /// RpcMgr with which the StatestoreService is registered.
+  RpcMgr rpc_mgr_;
 
   /// Metric that track the registered, non-failed subscribers.
   IntGauge* num_subscribers_metric_;

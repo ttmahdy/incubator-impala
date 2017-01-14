@@ -82,7 +82,7 @@ add_library(Util
   webserver.cc
   ${MUSTACHE_SRC_DIR}/mustache.cc
 )
-add_dependencies(Util thrift-deps gen_ir_descriptions)
+add_dependencies(Util generated-deps gen_ir_descriptions)
 
 # Squeasel requires C99 compatibility to build.
 SET_SOURCE_FILES_PROPERTIES(${SQUEASEL_SRC_DIR}/squeasel.c

@@ -30,7 +30,6 @@ class ImpalaServer;
 class ThriftServer;
 class Webserver;
 class MetricGroup;
-class Statestore;
 
 /// A single impala service, with a backend server, two client servers,
 /// a webserver and optionally a connection to a statestore.
@@ -108,41 +107,6 @@ class InProcessImpalaServer {
   /// Frontend Beeswax server.
   boost::scoped_ptr<ThriftServer> beeswax_server_;
 
-};
-
-/// An in-process statestore, with webserver and metrics.
-class InProcessStatestore {
- public:
-
-  // Creates and starts an InProcessStatestore with ports chosen from the ephemeral port
-  // range. Returns NULL if no server could be started.
-  static InProcessStatestore* StartWithEphemeralPorts();
-
-  /// Constructs but does not start the statestore.
-  InProcessStatestore(int statestore_port, int webserver_port);
-
-  /// Starts the statestore server, and the processing thread.
-  Status Start();
-
-  uint32_t port() { return statestore_port_; }
-
- private:
-  /// Websever object to serve debug pages through.
-  boost::scoped_ptr<Webserver> webserver_;
-
-  /// MetricGroup object
-  boost::scoped_ptr<MetricGroup> metrics_;
-
-  /// Port to start the statestore on.
-  uint32_t statestore_port_;
-
-  /// The statestore instance
-  boost::scoped_ptr<Statestore> statestore_;
-
-  /// Statestore Thrift server
-  boost::scoped_ptr<ThriftServer> statestore_server_;
-
-  boost::scoped_ptr<Thread> statestore_main_loop_;
 };
 
 }

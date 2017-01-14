@@ -221,3 +221,9 @@ add_dependencies(thrift-ext-data-src thrift-cpp)
 # Combined target for all thrift dependencies
 add_custom_target(thrift-deps ALL)
 add_dependencies(thrift-deps thrift-ext-data-src)
+
+# Add protobuf dependencies to this target to ensure they are built before any
+# library code.
+add_custom_target(proto-deps ALL DEPENDS statestore-proto-deps common-proto-deps)
+
+add_custom_target(generated-deps ALL DEPENDS thrift-deps proto-deps)

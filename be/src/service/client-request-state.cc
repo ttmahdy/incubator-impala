@@ -20,10 +20,12 @@
 #include <limits>
 #include <gutil/strings/substitute.h>
 
+#include "runtime/client-cache-types.h"
+#include "runtime/client-cache.h"
+#include "runtime/exec-env.h"
 #include "runtime/mem-tracker.h"
 #include "runtime/row-batch.h"
 #include "runtime/runtime-state.h"
-#include "runtime/exec-env.h"
 #include "scheduling/admission-controller.h"
 #include "scheduling/scheduler.h"
 #include "service/frontend.h"

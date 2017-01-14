@@ -92,6 +92,8 @@ DECLARE_int32(num_cores);
 DECLARE_int32(be_port);
 DECLARE_string(mem_limit);
 DECLARE_bool(is_coordinator);
+DECLARE_int32(num_acceptor_threads);
+DECLARE_int32(num_reactor_threads);
 
 // TODO: Remove the following RM-related flags in Impala 3.0.
 DEFINE_bool(enable_rm, false, "Deprecated");
@@ -166,20 +168,21 @@ ExecEnv::ExecEnv()
     query_exec_mgr_(new QueryExecMgr()),
     buffer_reservation_(nullptr),
     buffer_pool_(nullptr),
+    rpc_mgr_(new RpcMgr()),
     enable_webserver_(FLAGS_enable_webserver),
     is_fe_tests_(false),
     backend_address_(MakeNetworkAddress(FLAGS_hostname, FLAGS_be_port)) {
   // Initialize the scheduler either dynamically (with a statestore) or statically (with
   // a standalone single backend)
   if (FLAGS_use_statestore) {
-    TNetworkAddress subscriber_address =
+    subscriber_address_ =
         MakeNetworkAddress(FLAGS_hostname, FLAGS_state_store_subscriber_port);
     TNetworkAddress statestore_address =
         MakeNetworkAddress(FLAGS_state_store_host, FLAGS_state_store_port);
 
     statestore_subscriber_.reset(new StatestoreSubscriber(
         Substitute("impalad@$0", TNetworkAddressToString(backend_address_)),
-        subscriber_address, statestore_address, metrics_.get()));
+        subscriber_address_, statestore_address, rpc_mgr_.get(), metrics_.get()));
 
     if (FLAGS_is_coordinator) {
       scheduler_.reset(new Scheduler(statestore_subscriber_.get(),
@@ -232,20 +235,20 @@ ExecEnv::ExecEnv(const string& hostname, int backend_port, int subscriber_port,
     query_exec_mgr_(new QueryExecMgr()),
     buffer_reservation_(nullptr),
     buffer_pool_(nullptr),
+    rpc_mgr_(new RpcMgr()),
     enable_webserver_(FLAGS_enable_webserver && webserver_port > 0),
     is_fe_tests_(false),
     backend_address_(MakeNetworkAddress(FLAGS_hostname, FLAGS_be_port)) {
   request_pool_service_.reset(new RequestPoolService(metrics_.get()));
 
   if (FLAGS_use_statestore && statestore_port > 0) {
-    TNetworkAddress subscriber_address =
-        MakeNetworkAddress(hostname, subscriber_port);
+    subscriber_address_ = MakeNetworkAddress(hostname, subscriber_port);
     TNetworkAddress statestore_address =
         MakeNetworkAddress(statestore_host, statestore_port);
 
     statestore_subscriber_.reset(new StatestoreSubscriber(
         Substitute("impalad@$0", TNetworkAddressToString(backend_address_)),
-        subscriber_address, statestore_address, metrics_.get()));
+        subscriber_address_, statestore_address, rpc_mgr_.get(), metrics_.get()));
 
     if (FLAGS_is_coordinator) {
       scheduler_.reset(new Scheduler(statestore_subscriber_.get(),
@@ -321,6 +324,8 @@ Status ExecEnv::StartServices() {
   RETURN_IF_ERROR(RegisterMemoryMetrics(
       metrics_.get(), true, buffer_reservation_.get(), buffer_pool_.get()));
 
+  RETURN_IF_ERROR(rpc_mgr_->Init(FLAGS_num_acceptor_threads));
+
   // Limit of -1 means no memory limit.
   mem_tracker_.reset(new MemTracker(
       AggregateMemoryMetric::TOTAL_USED, bytes_limit > 0 ? bytes_limit : -1, "Process"));
@@ -389,6 +394,10 @@ Status ExecEnv::StartServices() {
     }
   }
 
+  // Do this last of all - now RPCs may arrive so all services should be up to handle
+  // them.
+  RETURN_IF_ERROR(
+      rpc_mgr_->StartServices(subscriber_address_.port, FLAGS_num_acceptor_threads));
   return Status::OK();
 }
 

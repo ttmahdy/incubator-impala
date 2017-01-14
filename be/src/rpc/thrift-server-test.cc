@@ -21,18 +21,16 @@
 #include "rpc/thrift-client.h"
 #include "service/fe-support.h"
 #include "service/impala-server.h"
-#include "gen-cpp/StatestoreService.h"
 #include "gutil/strings/substitute.h"
 
 #include "common/names.h"
 
 using namespace impala;
+using namespace beeswax;
 using namespace strings;
 using namespace apache::thrift;
 
 DECLARE_string(ssl_client_ca_certificate);
-
-DECLARE_int32(state_store_port);
 
 DECLARE_int32(be_port);
 DECLARE_int32(beeswax_port);
@@ -51,16 +49,31 @@ const string& PASSWORD_PROTECTED_PRIVATE_KEY =
 
 /// Dummy server class (chosen because it has the smallest interface to implement) that
 /// tests can use to start Thrift servers.
-class DummyStatestoreService : public StatestoreServiceIf {
+class DummyBeeswaxIf : public BeeswaxServiceIf {
  public:
-  virtual void RegisterSubscriber(TRegisterSubscriberResponse& response,
-      const TRegisterSubscriberRequest& request) {
-  }
+  virtual void query(QueryHandle& _return, const Query& query){};
+  virtual void executeAndWait(
+      QueryHandle& _return, const Query& query, const LogContextId& clientCtx){};
+  virtual void explain(QueryExplanation& _return, const Query& query){};
+  virtual void fetch(Results& _return, const QueryHandle& query_id, const bool start_over,
+      const int32_t fetch_size){};
+  virtual beeswax::QueryState::type get_state(const QueryHandle& handle) {
+    return beeswax::QueryState::CREATED;
+  };
+  virtual void get_results_metadata(
+      ResultsMetadata& _return, const QueryHandle& handle){};
+  virtual void echo(std::string& _return, const std::string& s){};
+  virtual void dump_config(std::string& _return){};
+  virtual void get_log(std::string& _return, const LogContextId& context){};
+  virtual void get_default_configuration(
+      std::vector<ConfigVariable>& _return, const bool include_hadoop){};
+  virtual void close(const QueryHandle& handle){};
+  virtual void clean(const LogContextId& log_context){};
 };
 
 boost::shared_ptr<TProcessor> MakeProcessor() {
-  boost::shared_ptr<DummyStatestoreService> service(new DummyStatestoreService());
-  return boost::shared_ptr<TProcessor>(new StatestoreServiceProcessor(service));
+  boost::shared_ptr<DummyBeeswaxIf> service(new DummyBeeswaxIf());
+  return boost::shared_ptr<TProcessor>(new BeeswaxServiceProcessor(service));
 }
 
 int GetServerPort() {
@@ -71,12 +84,12 @@ int GetServerPort() {
 
 TEST(ThriftServer, Connectivity) {
   int port = GetServerPort();
-  ThriftClient<StatestoreServiceClientWrapper> wrong_port_client("localhost",
-      port, "", NULL, false);
+  ThriftClient<BeeswaxServiceClient> wrong_port_client(
+      "localhost", port, "", NULL, false);
   ASSERT_FALSE(wrong_port_client.Open().ok());
 
   ThriftServer* server =
-      new ThriftServer("DummyStatestore", MakeProcessor(), port, NULL, NULL, 5);
+      new ThriftServer("DummyBeeswax", MakeProcessor(), port, NULL, NULL, 5);
   ASSERT_OK(server->Start());
 
   // Test that client recovers from failure to connect.
@@ -89,39 +102,31 @@ TEST(SslTest, Connectivity) {
   // client cannot.
   // Here and elsewhere - allocate ThriftServers on the heap to avoid race during
   // destruction. See IMPALA-2283.
-  ThriftServer* server = new ThriftServer("DummyStatestore", MakeProcessor(), port, NULL,
-      NULL, 5);
+  ThriftServer* server =
+      new ThriftServer("DummyBeeswax", MakeProcessor(), port, NULL, NULL, 5);
   ASSERT_OK(server->EnableSsl(SERVER_CERT, PRIVATE_KEY, "echo password"));
   ASSERT_OK(server->Start());
 
   FLAGS_ssl_client_ca_certificate = SERVER_CERT;
-  ThriftClient<StatestoreServiceClientWrapper> ssl_client(
-      "localhost", port, "", NULL, true);
+  ThriftClient<BeeswaxServiceClient> ssl_client("localhost", port, "", NULL, true);
   ASSERT_OK(ssl_client.Open());
-  TRegisterSubscriberResponse resp;
-  bool send_done = false;
-  EXPECT_NO_THROW({ssl_client.iface()->RegisterSubscriber(resp,
-      TRegisterSubscriberRequest(), &send_done);
-  });
+  QueryHandle resp;
+  EXPECT_NO_THROW({ ssl_client.iface()->query(resp, Query()); });
 
   // Disable SSL for this client.
-  ThriftClient<StatestoreServiceClientWrapper> non_ssl_client(
-      "localhost", port, "", NULL, false);
+  ThriftClient<BeeswaxServiceClient> non_ssl_client("localhost", port, "", NULL, false);
   ASSERT_OK(non_ssl_client.Open());
-  send_done = false;
-  EXPECT_THROW(non_ssl_client.iface()->RegisterSubscriber(
-      resp, TRegisterSubscriberRequest(), &send_done), TTransportException);
+  EXPECT_THROW(non_ssl_client.iface()->query(resp, Query()), TTransportException);
 }
 
 TEST(SslTest, BadCertificate) {
   FLAGS_ssl_client_ca_certificate = "unknown";
   int port = GetServerPort();
-  ThriftClient<StatestoreServiceClientWrapper>
-      ssl_client("localhost", port, "", NULL, true);
+  ThriftClient<BeeswaxServiceClient> ssl_client("localhost", port, "", NULL, true);
   ASSERT_FALSE(ssl_client.Open().ok());
 
   ThriftServer* server =
-      new ThriftServer("DummyStatestore", MakeProcessor(), port, NULL, NULL, 5);
+      new ThriftServer("DummyBeeswaxg", MakeProcessor(), port, NULL, NULL, 5);
   ASSERT_OK(server->EnableSsl(SERVER_CERT, PRIVATE_KEY, "echo password"));
   ASSERT_OK(server->Start());
 
@@ -133,24 +138,21 @@ TEST(PasswordProtectedPemFile, CorrectOperation) {
   // Require the server to execute a shell command to read the password to the private key
   // file.
   int port = GetServerPort();
-  ThriftServer* server = new ThriftServer("DummyStatestore", MakeProcessor(), port, NULL,
-      NULL, 5);
+  ThriftServer* server =
+      new ThriftServer("DummyBeeswax", MakeProcessor(), port, NULL, NULL, 5);
   ASSERT_OK(server->EnableSsl(
       SERVER_CERT, PASSWORD_PROTECTED_PRIVATE_KEY, "echo password"));
   ASSERT_OK(server->Start());
   FLAGS_ssl_client_ca_certificate = SERVER_CERT;
-  ThriftClient<StatestoreServiceClientWrapper>
-      ssl_client("localhost", port, "", NULL, true);
+  ThriftClient<BeeswaxServiceClient> ssl_client("localhost", port, "", NULL, true);
   ASSERT_OK(ssl_client.Open());
-  TRegisterSubscriberResponse resp;
-  bool send_done = false;
-  EXPECT_NO_THROW({ssl_client.iface()->RegisterSubscriber(resp,
-      TRegisterSubscriberRequest(), &send_done);});
+  QueryHandle resp;
+  EXPECT_NO_THROW({ ssl_client.iface()->query(resp, Query()); });
 }
 
 TEST(PasswordProtectedPemFile, BadPassword) {
   // Test failure when password to private key is wrong.
-  ThriftServer server("DummyStatestore", MakeProcessor(), GetServerPort(), NULL, NULL, 5);
+  ThriftServer server("DummyBeeswax", MakeProcessor(), GetServerPort(), NULL, NULL, 5);
   ASSERT_OK(server.EnableSsl(
       SERVER_CERT, PASSWORD_PROTECTED_PRIVATE_KEY, "echo wrongpassword"));
   EXPECT_FALSE(server.Start().ok());
@@ -158,7 +160,7 @@ TEST(PasswordProtectedPemFile, BadPassword) {
 
 TEST(PasswordProtectedPemFile, BadCommand) {
   // Test failure when password command is badly formed.
-  ThriftServer server("DummyStatestore", MakeProcessor(), GetServerPort(), NULL, NULL, 5);
+  ThriftServer server("DummyBeeswax", MakeProcessor(), GetServerPort(), NULL, NULL, 5);
   EXPECT_FALSE(server.EnableSsl(
       SERVER_CERT, PASSWORD_PROTECTED_PRIVATE_KEY, "cmd-no-exist").ok());
 }
@@ -167,17 +169,15 @@ TEST(SslTest, ClientBeforeServer) {
   // Instantiate a thrift client before a thrift server and test if it works (IMPALA-2747)
   FLAGS_ssl_client_ca_certificate = SERVER_CERT;
   int port = GetServerPort();
-  ThriftClient<StatestoreServiceClientWrapper>
-      ssl_client("localhost", port, "", NULL, true);
+  ThriftClient<BeeswaxServiceClient> ssl_client("localhost", port, "", NULL, true);
   ThriftServer* server =
-      new ThriftServer("DummyStatestore", MakeProcessor(), port, NULL, NULL, 5);
+      new ThriftServer("DummyBeeswax", MakeProcessor(), port, NULL, NULL, 5);
   ASSERT_OK(server->EnableSsl(SERVER_CERT, PRIVATE_KEY));
   ASSERT_OK(server->Start());
 
   ASSERT_OK(ssl_client.Open());
-  bool send_done = false;
-  TRegisterSubscriberResponse resp;
-  ssl_client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest(), &send_done);
+  QueryHandle resp;
+  ssl_client.iface()->query(resp, Query());
 }
 
 /// Test disabled because requires a high ulimit -n on build machines. Since the test does
@@ -204,25 +204,20 @@ TEST(ConcurrencyTest, DISABLED_ManyConcurrentConnections) {
 }
 
 TEST(NoPasswordPemFile, BadServerCertificate) {
-  ThriftServer* server = new ThriftServer("DummyStatestore", MakeProcessor(),
-      FLAGS_state_store_port + 5, NULL, NULL, 5);
+  ThriftServer* server =
+      new ThriftServer("DummyBeeswax", MakeProcessor(), FLAGS_be_port + 5, NULL, NULL, 5);
   EXPECT_OK(server->EnableSsl(BAD_SERVER_CERT, BAD_PRIVATE_KEY));
   EXPECT_OK(server->Start());
   FLAGS_ssl_client_ca_certificate = SERVER_CERT;
-  ThriftClient<StatestoreServiceClientWrapper> ssl_client(
-      "localhost", FLAGS_state_store_port + 5, "", NULL, true);
+  ThriftClient<BeeswaxServiceClient> ssl_client(
+      "localhost", FLAGS_be_port + 5, "", NULL, true);
   EXPECT_OK(ssl_client.Open());
-  TRegisterSubscriberResponse resp;
-  bool send_done = false;
-  EXPECT_THROW({ssl_client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest(),
-      &send_done);
-  }, TSSLException);
+  QueryHandle resp;
+  EXPECT_THROW({ ssl_client.iface()->query(resp, Query()); }, TSSLException);
   // Close and reopen the socket
   ssl_client.Close();
   EXPECT_OK(ssl_client.Open());
-  EXPECT_THROW({ssl_client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest(),
-      &send_done);
-  }, TSSLException);
+  EXPECT_THROW({ ssl_client.iface()->query(resp, Query()); }, TSSLException);
 }
 
 IMPALA_TEST_MAIN();

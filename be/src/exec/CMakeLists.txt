@@ -101,7 +101,7 @@ add_library(Exec
   unnest-node.cc
 )
 
-add_dependencies(Exec thrift-deps)
+add_dependencies(Exec generated-deps)
 
 ADD_BE_TEST(zigzag-test)
 ADD_BE_TEST(old-hash-table-test)

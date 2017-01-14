@@ -22,13 +22,14 @@
 
 #include "catalog/catalog-util.h"
 #include "exec/read-write-util.h"
+#include "gen-cpp/CatalogInternalService_types.h"
+#include "gen-cpp/CatalogObjects_types.h"
+#include "gen-cpp/CatalogService_types.h"
+#include "rpc/rpc-mgr.inline.h"
 #include "statestore/statestore-subscriber.h"
 #include "util/debug-util.h"
 #include "util/logging-support.h"
 #include "util/webserver.h"
-#include "gen-cpp/CatalogInternalService_types.h"
-#include "gen-cpp/CatalogObjects_types.h"
-#include "gen-cpp/CatalogService_types.h"
 
 #include "common/names.h"
 
@@ -45,6 +46,8 @@ DECLARE_int32(state_store_subscriber_port);
 DECLARE_int32(state_store_port);
 DECLARE_string(hostname);
 DECLARE_bool(compact_catalog_topic);
+DECLARE_int32(num_acceptor_threads);
+DECLARE_int32(num_reactor_threads);
 
 string CatalogServer::IMPALA_CATALOG_TOPIC = "catalog-update";
 
@@ -168,6 +171,8 @@ Status CatalogServer::Start() {
   TNetworkAddress server_address = MakeNetworkAddress(FLAGS_hostname,
       FLAGS_catalog_service_port);
 
+  RETURN_IF_ERROR(rpc_mgr_.Init(FLAGS_num_acceptor_threads));
+
   // This will trigger a full Catalog metadata load.
   catalog_.reset(new Catalog());
   catalog_update_gathering_thread_.reset(new Thread("catalog-server",
@@ -175,8 +180,8 @@ Status CatalogServer::Start() {
       &CatalogServer::GatherCatalogUpdatesThread, this));
 
   statestore_subscriber_.reset(new StatestoreSubscriber(
-     Substitute("catalog-server@$0", TNetworkAddressToString(server_address)),
-     subscriber_address, statestore_address, metrics_));
+      Substitute("catalog-server@$0", TNetworkAddressToString(server_address)),
+      subscriber_address, statestore_address, &rpc_mgr_, metrics_));
 
   StatestoreSubscriber::UpdateCallback cb =
       bind<void>(mem_fn(&CatalogServer::UpdateCatalogTopicCallback), this, _1, _2);
@@ -186,6 +191,8 @@ Status CatalogServer::Start() {
     return status;
   }
   RETURN_IF_ERROR(statestore_subscriber_->Start());
+  RETURN_IF_ERROR(rpc_mgr_.StartServices(
+      FLAGS_state_store_subscriber_port, FLAGS_num_acceptor_threads));
 
   // Notify the thread to start for the first time.
   {

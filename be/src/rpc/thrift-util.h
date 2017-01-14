@@ -136,6 +136,24 @@ Status DeserializeThriftMsg(const uint8_t* buf, uint32_t* len, bool compact,
   return Status::OK();
 }
 
+/// Serialize a Thrift structure to a Protobuf. The Protobuf must contain a field called
+/// 'thrift_struct' of type bytes. Returns an error if serialization fails.
+template <class T, class P>
+Status SerializeThriftToProtoWrapper(T* thrift, P* proto) {
+  ThriftSerializer serializer(true);
+  return serializer.Serialize(thrift, proto->mutable_thrift_struct());
+}
+
+/// Deserialize a Thrift structure from a Protobuf, which must contain a field called
+/// 'thrift_struct' of type bytes. Returns an error if deserialization fails.
+template <class T, class P>
+Status DeserializeThriftFromProtoWrapper(const P& proto, T* deserialized_msg) {
+  uint32_t len = proto.thrift_struct().size();
+  return DeserializeThriftMsg(
+      reinterpret_cast<const uint8_t*>(proto.thrift_struct().data()), &len, true,
+      deserialized_msg);
+}
+
 /// Redirects all Thrift logging to VLOG(1)
 void InitThriftLogging();
 

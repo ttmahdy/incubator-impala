@@ -231,6 +231,8 @@ class StatsMetric : public Metric {
     document->AddMember(key_.c_str(), container, document->GetAllocator());
   }
 
+  int64_t count() const { return boost::accumulators::count(acc_); }
+
   virtual std::string ToHumanReadable() {
     std::stringstream out;
     if (StatsSelection & StatsType::COUNT) {

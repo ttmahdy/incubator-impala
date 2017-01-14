@@ -71,7 +71,7 @@ add_library(Runtime
   tuple-row.cc
   tmp-file-mgr.cc
 )
-add_dependencies(Runtime thrift-deps)
+add_dependencies(Runtime generated-deps)
 
 # This test runs forever so should not be part of 'make test'
 add_executable(disk-io-mgr-stress-test disk-io-mgr-stress-test.cc)

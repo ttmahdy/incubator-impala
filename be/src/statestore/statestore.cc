@@ -23,10 +23,17 @@
 #include <gutil/strings/substitute.h>
 
 #include "common/status.h"
+#include "exec/kudu-util.h"
 #include "gen-cpp/StatestoreService_types.h"
+#include "kudu/rpc/rpc_controller.h"
+#include "kudu/util/net/net_util.h"
+#include "rpc/rpc-mgr.inline.h"
+#include "rpc/rpc.h"
 #include "rpc/thrift-util.h"
 #include "statestore/failure-detector.h"
-#include "statestore/statestore-subscriber-client-wrapper.h"
+#include "statestore/statestore.pb.h"
+#include "statestore/statestore.proxy.h"
+#include "statestore/statestore.service.h"
 #include "util/debug-util.h"
 #include "util/logging-support.h"
 #include "util/time.h"
@@ -39,6 +46,10 @@ using namespace apache::thrift;
 using namespace impala;
 using namespace rapidjson;
 using namespace strings;
+
+using kudu::rpc::RpcContext;
+using kudu::MonoDelta;
+using kudu::rpc::ServiceIf;
 
 DEFINE_int32(statestore_max_missed_heartbeats, 10, "Maximum number of consecutive "
     "heartbeat messages an impalad can miss before being declared failed by the "
@@ -60,6 +71,16 @@ DEFINE_int32(statestore_heartbeat_tcp_timeout_seconds, 3, "(Advanced) The time a
     "which a heartbeat RPC to a subscriber will timeout. This setting protects against "
     "badly hung machines that are not able to respond to the heartbeat RPC in short "
     "order");
+
+DEFINE_int32(statestore_num_svc_threads, 10, "The number of threads available to service "
+                                             "incoming RPC requests");
+
+DEFINE_int32(statestore_svc_queue_depth, 1024, "The number of pending RPC requests that "
+                                               "may be queued before subsequent requests "
+                                               "are rejected");
+
+DECLARE_int32(num_acceptor_threads);
+DECLARE_int32(num_reactor_threads);
 
 // If this value is set too low, it's possible that UpdateState() might timeout during a
 // working invocation, and only a restart of the statestore with a change in value would
@@ -101,25 +122,34 @@ const int32_t STATESTORE_MAX_SUBSCRIBERS = 10000;
 // Updates or heartbeats that miss their deadline by this much are logged.
 const uint32_t DEADLINE_MISS_THRESHOLD_MS = 2000;
 
-typedef ClientConnection<StatestoreSubscriberClientWrapper> StatestoreSubscriberConn;
-
-class StatestoreThriftIf : public StatestoreServiceIf {
+/// Service interface implementation for StatestoreServiceIf.
+class StatestoreService : public StatestoreServiceIf {
  public:
-  StatestoreThriftIf(Statestore* statestore)
-      : statestore_(statestore) {
-    DCHECK(statestore_ != NULL);
+  StatestoreService(RpcMgr* rpc_mgr, Statestore* statestore)
+    : StatestoreServiceIf(rpc_mgr->metric_entity(), rpc_mgr->result_tracker()),
+      statestore_(statestore) {}
+
+  virtual void RegisterSubscriber(
+      const ThriftWrapperPb* request, ThriftWrapperPb* response, RpcContext* context) {
+    DCHECK(statestore_ != nullptr);
+    TRegisterSubscriberRequest params;
+    Status status = DeserializeThriftFromProtoWrapper(*request, &params);
+
+    TRegisterSubscriberResponse thrift_response;
+    if (status.ok()) {
+      TUniqueId registration_id;
+      status = statestore_->RegisterSubscriber(params.subscriber_id,
+          params.subscriber_location, params.topic_registrations, &registration_id);
+      thrift_response.__set_registration_id(registration_id);
+    }
+
+    status.ToThrift(&thrift_response.status);
+    SerializeThriftToProtoWrapper(&thrift_response, response);
+    context->RespondSuccess();
   }
 
-  virtual void RegisterSubscriber(TRegisterSubscriberResponse& response,
-      const TRegisterSubscriberRequest& params) {
-    TUniqueId registration_id;
-    Status status = statestore_->RegisterSubscriber(params.subscriber_id,
-        params.subscriber_location, params.topic_registrations, &registration_id);
-    status.ToThrift(&response.status);
-    response.__set_registration_id(registration_id);
-  }
  private:
-  Statestore* statestore_;
+  Statestore* statestore_ = nullptr;
 };
 
 void Statestore::TopicEntry::SetValue(const Statestore::TopicEntry::Value& bytes,
@@ -215,29 +245,16 @@ void Statestore::Subscriber::SetLastTopicVersionProcessed(const TopicId& topic_i
 
 Statestore::Statestore(MetricGroup* metrics)
   : exit_flag_(false),
-    subscriber_topic_update_threadpool_("statestore-update",
-        "subscriber-update-worker",
-        FLAGS_statestore_num_update_threads,
-        STATESTORE_MAX_SUBSCRIBERS,
+    subscriber_topic_update_threadpool_("statestore-update", "subscriber-update-worker",
+        FLAGS_statestore_num_update_threads, STATESTORE_MAX_SUBSCRIBERS,
         bind<void>(mem_fn(&Statestore::DoSubscriberUpdate), this, false, _1, _2)),
     subscriber_heartbeat_threadpool_("statestore-heartbeat",
-        "subscriber-heartbeat-worker",
-        FLAGS_statestore_num_heartbeat_threads,
+        "subscriber-heartbeat-worker", FLAGS_statestore_num_heartbeat_threads,
         STATESTORE_MAX_SUBSCRIBERS,
         bind<void>(mem_fn(&Statestore::DoSubscriberUpdate), this, true, _1, _2)),
-    update_state_client_cache_(new StatestoreSubscriberClientCache(1, 0,
-        FLAGS_statestore_update_tcp_timeout_seconds * 1000,
-        FLAGS_statestore_update_tcp_timeout_seconds * 1000, "",
-        EnableInternalSslConnections())),
-    heartbeat_client_cache_(new StatestoreSubscriberClientCache(1, 0,
-        FLAGS_statestore_heartbeat_tcp_timeout_seconds * 1000,
-        FLAGS_statestore_heartbeat_tcp_timeout_seconds * 1000, "",
-        EnableInternalSslConnections())),
-    thrift_iface_(new StatestoreThriftIf(this)),
-    failure_detector_(new MissedHeartbeatFailureDetector(
-        FLAGS_statestore_max_missed_heartbeats,
-        FLAGS_statestore_max_missed_heartbeats / 2)) {
-
+    failure_detector_(
+        new MissedHeartbeatFailureDetector(FLAGS_statestore_max_missed_heartbeats,
+            FLAGS_statestore_max_missed_heartbeats / 2)) {
   DCHECK(metrics != NULL);
   num_subscribers_metric_ =
       metrics->AddGauge<int64_t>(STATESTORE_LIVE_SUBSCRIBERS, 0);
@@ -251,9 +268,6 @@ Statestore::Statestore(MetricGroup* metrics)
       StatsMetric<double>::CreateAndRegister(metrics, STATESTORE_UPDATE_DURATION);
   heartbeat_duration_metric_ =
       StatsMetric<double>::CreateAndRegister(metrics, STATESTORE_HEARTBEAT_DURATION);
-
-  update_state_client_cache_->InitMetrics(metrics, "subscriber-update-state");
-  heartbeat_client_cache_->InitMetrics(metrics, "subscriber-heartbeat");
 }
 
 void Statestore::RegisterWebpages(Webserver* webserver) {
@@ -347,14 +361,16 @@ Status Statestore::OfferUpdate(const ScheduledSubscriberUpdate& update,
     ThreadPool<ScheduledSubscriberUpdate>* threadpool) {
   if (threadpool->GetQueueSize() >= STATESTORE_MAX_SUBSCRIBERS
       || !threadpool->Offer(update)) {
-    stringstream ss;
-    ss << "Maximum subscriber limit reached: " << STATESTORE_MAX_SUBSCRIBERS;
+    if (ShouldExit()) return Status("Statestore is shutting down");
+
     lock_guard<mutex> l(subscribers_lock_);
     SubscriberMap::iterator subscriber_it = subscribers_.find(update.second);
     DCHECK(subscriber_it != subscribers_.end());
     subscribers_.erase(subscriber_it);
-    LOG(ERROR) << ss.str();
-    return Status(ss.str());
+    const string err =
+        Substitute("Maximum subscriber limit reached: $0", STATESTORE_MAX_SUBSCRIBERS);
+    LOG(ERROR) << err;
+    return Status(err);
   }
 
   return Status::OK();
@@ -422,16 +438,15 @@ Status Statestore::SendTopicUpdate(Subscriber* subscriber, bool* update_skipped)
   update_state_request.__set_registration_id(subscriber->registration_id());
 
   // Second: try and send it
-  Status status;
-  StatestoreSubscriberConn client(update_state_client_cache_.get(),
-      subscriber->network_address(), &status);
-  RETURN_IF_ERROR(status);
+  auto rpc =
+      Rpc<StatestoreSubscriberProxy>::Make(subscriber->network_address(), &rpc_mgr_);
 
   TUpdateStateResponse response;
-  RETURN_IF_ERROR(client.DoRpc(
-      &StatestoreSubscriberClientWrapper::UpdateState, update_state_request, &response));
+  MonoDelta timeout = MonoDelta::FromSeconds(FLAGS_statestore_update_tcp_timeout_seconds);
+  RETURN_IF_ERROR(rpc.SetTimeout(timeout).ExecuteWithThriftArgs(
+      &StatestoreSubscriberProxy::UpdateState, &update_state_request, &response));
 
-  status = Status(response.status);
+  Status status = Status(response.status);
   if (!status.ok()) {
     topic_update_duration_metric_->Update(sw.ElapsedTime() / (1000.0 * 1000.0 * 1000.0));
     return status;
@@ -596,22 +611,24 @@ void Statestore::SetExitFlag() {
   lock_guard<mutex> l(exit_flag_lock_);
   exit_flag_ = true;
   subscriber_topic_update_threadpool_.Shutdown();
+  subscriber_heartbeat_threadpool_.Shutdown();
 }
 
 Status Statestore::SendHeartbeat(Subscriber* subscriber) {
   MonotonicStopWatch sw;
   sw.Start();
 
-  Status status;
-  StatestoreSubscriberConn client(heartbeat_client_cache_.get(),
-      subscriber->network_address(), &status);
-  RETURN_IF_ERROR(status);
-
   THeartbeatRequest request;
-  THeartbeatResponse response;
   request.__set_registration_id(subscriber->registration_id());
-  RETURN_IF_ERROR(
-      client.DoRpc(&StatestoreSubscriberClientWrapper::Heartbeat, request, &response));
+  THeartbeatResponse response;
+
+  auto rpc =
+      Rpc<StatestoreSubscriberProxy>::Make(subscriber->network_address(), &rpc_mgr_);
+
+  MonoDelta timeout =
+      MonoDelta::FromSeconds(FLAGS_statestore_heartbeat_tcp_timeout_seconds);
+  RETURN_IF_ERROR(rpc.SetTimeout(timeout).ExecuteWithThriftArgs(
+      &StatestoreSubscriberProxy::Heartbeat, &request, &response));
 
   heartbeat_duration_metric_->Update(sw.ElapsedTime() / (1000.0 * 1000.0 * 1000.0));
   return Status::OK();
@@ -671,7 +688,7 @@ void Statestore::DoSubscriberUpdate(bool is_heartbeat, int thread_id,
 
     deadline_ms = UnixMillis() + FLAGS_statestore_heartbeat_frequency_ms;
   } else {
-    bool update_skipped;
+    bool update_skipped = false;
     status = SendTopicUpdate(subscriber.get(), &update_skipped);
     if (status.code() == TErrorCode::RPC_RECV_TIMEOUT) {
       // Add details to status to make it more useful, while preserving the stack
@@ -710,15 +727,17 @@ void Statestore::DoSubscriberUpdate(bool is_heartbeat, int thread_id,
                   << "or re-registered (last known registration ID: " << update.second
                   << ")";
         UnregisterSubscriber(subscriber.get());
+        return;
       }
-    } else {
-      // Schedule the next message.
-      VLOG(3) << "Next " << (is_heartbeat ? "heartbeat" : "update") << " deadline for: "
-              << subscriber->id() << " is in " << deadline_ms << "ms";
-      OfferUpdate(make_pair(deadline_ms, subscriber->id()), is_heartbeat ?
-          &subscriber_heartbeat_threadpool_ : &subscriber_topic_update_threadpool_);
     }
   }
+  // Schedule the next message.
+  VLOG(3) << "Next " << (is_heartbeat ? "heartbeat" : "update")
+          << " deadline for: " << subscriber->id() << " is in "
+          << (deadline_ms - UnixMillis()) << "ms";
+  OfferUpdate(make_pair(deadline_ms, subscriber->id()), is_heartbeat ?
+          &subscriber_heartbeat_threadpool_ :
+          &subscriber_topic_update_threadpool_);
 }
 
 void Statestore::UnregisterSubscriber(Subscriber* subscriber) {
@@ -728,10 +747,6 @@ void Statestore::UnregisterSubscriber(Subscriber* subscriber) {
     // Already failed and / or replaced with a new registration
     return;
   }
-
-  // Close all active clients so that the next attempt to use them causes a Reopen()
-  update_state_client_cache_->CloseConnections(subscriber->network_address());
-  heartbeat_client_cache_->CloseConnections(subscriber->network_address());
 
   // Prevent the failure detector from growing without bound
   failure_detector_->EvictPeer(PrintId(subscriber->registration_id()));
@@ -750,7 +765,33 @@ void Statestore::UnregisterSubscriber(Subscriber* subscriber) {
   subscribers_.erase(subscriber->id());
 }
 
-Status Statestore::MainLoop() {
-  subscriber_topic_update_threadpool_.Join();
+Status Statestore::Start() {
+  RETURN_IF_ERROR(rpc_mgr_.Init(FLAGS_num_reactor_threads));
+  if (FLAGS_statestore_num_svc_threads < 1) {
+    return Status("--statestore_num_svc_threads must be a positive integer.");
+  }
+  if (FLAGS_statestore_svc_queue_depth < 1) {
+    return Status("--statestore_svc_queue_depth must be a positive integer.");
+  }
+
+  unique_ptr<ServiceIf> impl(new StatestoreService(&rpc_mgr_, this));
+  RETURN_IF_ERROR(rpc_mgr_.RegisterService(
+      FLAGS_statestore_num_svc_threads, FLAGS_statestore_svc_queue_depth, move(impl)));
+  RETURN_IF_ERROR(
+      rpc_mgr_.StartServices(FLAGS_state_store_port, FLAGS_num_acceptor_threads));
   return Status::OK();
+}
+
+Status Statestore::Join() {
+  subscriber_topic_update_threadpool_.Join();
+  subscriber_heartbeat_threadpool_.Join();
+  rpc_mgr_.UnregisterServices();
+  return Status::OK();
+}
+
+set<Statestore::SubscriberId> Statestore::GetActiveSubscribersForTesting() {
+  lock_guard<mutex> l(subscribers_lock_);
+  set<SubscriberId> ret;
+  for (auto s : subscribers_) ret.insert(s.first);
+  return ret;
 }
