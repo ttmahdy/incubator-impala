@@ -21,9 +21,13 @@ package impala;
 
 import "rpc/common.proto";
 
-message PingRequestPb {}
+message PingRequestPb {
+  optional string payload = 1;
+}
 
-message PingResponsePb { required int32 int_response = 1; }
+message PingResponsePb {
+  required int32 int_response = 1;
+}
 
 service PingService {
   rpc Ping(PingRequestPb) returns (PingResponsePb);

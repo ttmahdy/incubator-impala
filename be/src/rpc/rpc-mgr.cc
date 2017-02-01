@@ -53,7 +53,10 @@ DEFINE_int32(num_acceptor_threads, 2, "Number of threads dedicated to accepting 
 DEFINE_int32(num_reactor_threads, 8, "Number of threads dedicated to managing "
                                      "network IO for RPC services");
 
+DECLARE_int32(rpc_max_message_size);
+
 Status RpcMgr::Init(int32_t num_reactor_threads) {
+  FLAGS_rpc_max_message_size = numeric_limits<int32_t>::max();
   MessengerBuilder bld("impala-server");
   const scoped_refptr<MetricEntity> entity(
       METRIC_ENTITY_server.Instantiate(&registry_, "krpc-metrics"));
@@ -104,7 +107,6 @@ void RpcMgr::UnregisterServices() {
 
   messenger_->UnregisterAllServices();
   messenger_->Shutdown();
-  service_pools_.clear();
 }
 
 void RpcMgr::ToJson(Document* doc) {

@@ -114,6 +114,9 @@ Status ParseMessage(const Slice& buf,
     << "Got mis-sized buffer: " << KUDU_REDACT(buf.ToDebugString());
 
   CodedInputStream in(buf.data(), buf.size());
+
+  // IMPALA-4874: Set the maximum byte size to exactly what the buffer requires.
+  in.SetTotalBytesLimit(buf.size(), -1);
   in.Skip(kMsgLengthPrefixLength);
 
   uint32_t header_len;

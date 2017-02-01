@@ -312,6 +312,20 @@ TEST_F(RpcTest, ThriftWrapperTest) {
   ASSERT_EQ(addr.port, port + 1);
 }
 
+TEST_F(RpcTest, VeryLargePayloadTest) {
+  unique_ptr<ServiceIf> impl(
+      new PingServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
+  ASSERT_OK(rpc_mgr_.RegisterService(1, 1, move(impl)));
+  rpc_mgr_.StartServices(SERVICE_PORT, 2);
+
+  PingRequestPb request;
+  request.mutable_payload()->resize(1024 * 1024 * 1024);
+
+  PingResponsePb response;
+  ASSERT_OK(Rpc<PingServiceProxy>::Make(localhost_, &rpc_mgr_)
+      .Execute(&PingServiceProxy::Ping, request, &response));
+}
+
 }
 
 IMPALA_TEST_MAIN();

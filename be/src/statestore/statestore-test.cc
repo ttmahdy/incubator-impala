@@ -46,11 +46,13 @@ namespace impala {
 /// heartbeat and update state rpc handlers.
 class TestSubscriber : public StatestoreSubscriberIf {
  public:
-  TestSubscriber(RpcMgr* rpc_mgr, const TNetworkAddress& statestore_address, int32_t port)
+  TestSubscriber(int id, RpcMgr* rpc_mgr, const TNetworkAddress& statestore_address, int32_t port)
     : StatestoreSubscriberIf(rpc_mgr->metric_entity(), rpc_mgr->result_tracker()),
       rpc_mgr_(rpc_mgr),
       statestore_address_(statestore_address),
-      port_(port) {}
+      port_(port) {
+    subscriber_id_ = Substitute("statestore-test-subscriber-$0", id);
+  }
 
   virtual void UpdateState(
       const ThriftWrapperPb* request, ThriftWrapperPb* response, RpcContext* context) {
@@ -91,7 +93,6 @@ class TestSubscriber : public StatestoreSubscriberIf {
   void SetUpdateStateCallback(const UpdateStateCallback& cb) { update_state_cb_ = cb; }
 
   Status Register(vector<TTopicRegistration> topics = {}) {
-    subscriber_id_ = "statestore-test-client";
     TRegisterSubscriberRequest request;
     request.__set_subscriber_id(subscriber_id_);
     request.__set_subscriber_location(MakeNetworkAddress("localhost", port_));
@@ -190,9 +191,8 @@ class StatestoreTest : public testing::Test {
       ASSERT_OK(rpc_mgrs_.back()->Init(1));
       int port = FindUnusedEphemeralPort(nullptr);
       ASSERT_NE(-1, port) << "Could not find unused ephemeral port!";
-      unique_ptr<TestSubscriber> subscriber = make_unique<TestSubscriber>(
-          rpc_mgrs_.back().get(), MakeNetworkAddress("127.0.0.1", FLAGS_state_store_port),
-          port);
+      unique_ptr<TestSubscriber> subscriber = make_unique<TestSubscriber>(i,
+          rpc_mgrs_.back().get(), resolved_localhost_, port);
       subscribers_.push_back(subscriber.get());
       ASSERT_OK(subscribers_.back()->rpc_mgr()->RegisterService(2, 10, move(subscriber)));
       ASSERT_OK(subscribers_.back()->rpc_mgr()->StartServices(port, 1));
@@ -443,6 +443,60 @@ TEST_F(StatestoreTest, TopicPersistence) {
 
   subscribers_[1]->SetUpdateStateCallback(check_entries);
   ASSERT_OK(subscribers_[1]->Register(registrations));
+  subscribers_[1]->WaitForUpdates(2);
+}
+
+TEST_F(StatestoreTest, VeryLargeTopic) {
+  string topic_name = "very_large_topic";
+  constexpr int SIZE = 1024 * 1024 * 100;
+  constexpr int NUM_ENTRIES = 10;
+  auto add_entries = [topic_name]
+      (TestSubscriber* sub, TUpdateStateRequest* request, TUpdateStateResponse* response) {
+    if (sub->update_state_count() == 1) {
+      Status::OK().ToThrift(&response->status);
+      vector<TTopicItem> items;
+      for (int i = 0; i < NUM_ENTRIES; ++i) {
+        TTopicItem item;
+        item.__set_key(Substitute("1gb-$0", i));
+        item.__set_value("");
+        item.value.resize(SIZE);
+        items.push_back(item);
+      }
+      TTopicDelta delta;
+      delta.__set_topic_name(topic_name);
+      delta.__set_topic_entries(items);
+      delta.__set_topic_deletions({});
+      delta.__set_is_delta(false);
+      vector<TTopicDelta> deltas = {delta};
+      response->__set_topic_updates(deltas);
+      response->__set_skipped(false);
+    }
+  };
+
+  auto check_entries = [topic_name]
+      (TestSubscriber* sub, TUpdateStateRequest* request, TUpdateStateResponse* response) {
+    if (sub->update_state_count() == 1) {
+      ASSERT_TRUE(request->topic_deltas.find(topic_name) != request->topic_deltas.end());
+      ASSERT_EQ(NUM_ENTRIES, request->topic_deltas[topic_name].topic_entries.size());
+      for (int i = 0; i < NUM_ENTRIES; ++i) {
+        const TTopicItem& item = request->topic_deltas[topic_name].topic_entries[i];
+        ASSERT_EQ(SIZE, item.value.size());
+      }
+    }
+  };
+
+  InitSubscribers(2);
+  subscribers_[0]->SetUpdateStateCallback(add_entries);
+  subscribers_[1]->SetUpdateStateCallback(check_entries);
+  TTopicRegistration reg;
+  reg.__set_topic_name(topic_name);
+  reg.__set_is_transient(true);
+  vector<TTopicRegistration> regs = {reg};
+
+  ASSERT_OK(subscribers_[0]->Register(regs));
+  subscribers_[0]->WaitForUpdates(2);
+
+  ASSERT_OK(subscribers_[1]->Register(regs));
   subscribers_[1]->WaitForUpdates(2);
 }
 
