@@ -133,7 +133,7 @@ class StatestoreService : public StatestoreServiceIf {
       const ThriftWrapperPb* request, ThriftWrapperPb* response, RpcContext* context) {
     DCHECK(statestore_ != nullptr);
     TRegisterSubscriberRequest params;
-    Status status = DeserializeThriftFromProtoWrapper(*request, &params);
+    Status status = DeserializeFromSidecar(context, request->sidecar_idx(), &params);
 
     TRegisterSubscriberResponse thrift_response;
     if (status.ok()) {
@@ -144,7 +144,8 @@ class StatestoreService : public StatestoreServiceIf {
     }
 
     status.ToThrift(&thrift_response.status);
-    SerializeThriftToProtoWrapper(&thrift_response, response);
+
+    SerializeToSidecar(context, &thrift_response, response);
     context->RespondSuccess();
   }
 

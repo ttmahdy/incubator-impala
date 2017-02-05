@@ -55,26 +55,29 @@ class TestSubscriber : public StatestoreSubscriberIf {
   virtual void UpdateState(
       const ThriftWrapperPb* request, ThriftWrapperPb* response, RpcContext* context) {
     TUpdateStateRequest thrift_request;
-    Status status = DeserializeThriftFromProtoWrapper(*request, &thrift_request);
+    Status status =
+        DeserializeFromSidecar(context, response->sidecar_idx(), &thrift_request);
+
     TUpdateStateResponse thrift_response;
     update_state_count_.Add(1);
     if (update_state_cb_) update_state_cb_(this, &thrift_request, &thrift_response);
 
     status.ToThrift(&thrift_response.status);
-    SerializeThriftToProtoWrapper(&thrift_response, response);
+    SerializeToSidecar(context, &thrift_response, response);
+
     context->RespondSuccess();
   }
 
   virtual void Heartbeat(
       const ThriftWrapperPb* request, ThriftWrapperPb* response, RpcContext* context) {
     THeartbeatRequest thrift_request;
-    Status status = DeserializeThriftFromProtoWrapper(*request, &thrift_request);
+    Status status = DeserializeFromSidecar(context, response->sidecar_idx(), &thrift_request);
     heartbeat_count_.Add(1);
 
     THeartbeatResponse thrift_response;
     if (heartbeat_cb_) heartbeat_cb_(this, &thrift_request, &thrift_response);
 
-    SerializeThriftToProtoWrapper(&thrift_response, response);
+    SerializeToSidecar(context, &thrift_response, response);
     context->RespondSuccess();
   }
 

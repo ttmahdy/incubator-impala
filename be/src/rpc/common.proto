@@ -27,4 +27,7 @@
 package impala;
 
 // Common wrapper struct for Thrift data structures serialized to Protobuf.
-message ThriftWrapperPb { required bytes thrift_struct = 1; }
+message ThriftWrapperPb {
+  // Index of the sidecar which contains the Thrift-serialized payload. Almost always 0.
+  required int32 sidecar_idx = 1;
+}

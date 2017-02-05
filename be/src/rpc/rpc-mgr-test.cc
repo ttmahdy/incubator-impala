@@ -34,9 +34,11 @@
 
 using namespace impala;
 
+using kudu::Slice;
 using kudu::rpc::ServiceIf;
 using kudu::rpc::RpcController;
 using kudu::rpc::RpcContext;
+using kudu::rpc::RpcSidecar;
 using kudu::rpc::ErrorStatusPB;
 
 using namespace std;
@@ -74,11 +76,12 @@ class PingServiceImpl : public PingServiceIf {
   virtual void PingThrift(
       const ThriftWrapperPb* request, ThriftWrapperPb* response, RpcContext* context) {
     TNetworkAddress req;
-    DeserializeThriftFromProtoWrapper(*request, &req);
+    ASSERT_OK(DeserializeFromSidecar(context, request->sidecar_idx(), &req));
 
     // Do something to show the request was processed.
     req.port++;
-    SerializeThriftToProtoWrapper(&req, response);
+    ASSERT_OK(SerializeToSidecar(context, &req, response));
+
     cb_(context);
   }
 
@@ -221,9 +224,9 @@ TEST_F(RpcTest, FullServiceQueueTest) {
   // Queue should be full. Try another RPC and check that it fails due to backpressure.
   auto rpc = Rpc<PingServiceProxy>::Make(
       MakeNetworkAddress("localhost", SERVICE_PORT), &rpc_mgr_)
-      .SetTimeout(kudu::MonoDelta::FromSeconds(60))
-      .SetRetryInterval(10)
-      .SetMaxAttempts(10);
+       .SetTimeout(kudu::MonoDelta::FromSeconds(60))
+       .SetRetryInterval(10)
+       .SetMaxAttempts(10);
 
   PingRequestPb request;
   PingResponsePb response;

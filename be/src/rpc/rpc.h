@@ -20,6 +20,7 @@
 
 #include "kudu/rpc/rpc_context.h"
 #include "kudu/rpc/rpc_controller.h"
+#include "kudu/rpc/rpc_sidecar.h"
 #include "kudu/util/monotime.h"
 #include "rpc/common.pb.h"
 #include "rpc/rpc-mgr.inline.h"
@@ -84,6 +85,25 @@ class Rpc {
     return *this;
   }
 
+  // Adds an outbound sidecar to the list of sidecars to be sent along with the RPC
+  // request. 'idx' is set to the index of 'sidecar' in the outbound list.  The memory
+  // that the sidecar slice points to is not owned by this Rpc object, and so must have a
+  // lifetime as long as the rpc object itself.
+  Rpc& AddSidecar(kudu::Slice sidecar, int* idx) {
+    outbound_sidecars_.push_back(sidecar);
+    *idx = outbound_sidecars_.size() - 1;
+    return *this;
+  }
+
+  // Fills 'sidecar' with index 'idx' with the slice that represents a sidecar payload
+  // returned after an Rpc has completed. If 'idx' is larger than the number of inbound
+  // sidecars, an error is returned. This method may only be called after a synchronous
+  // RPC invocation using Execute().
+  Status GetInboundSidecar(int idx, kudu::Slice* sidecar) {
+    DCHECK(controller_.get() != nullptr);
+    return FromKuduStatus(controller_->GetInboundSidecar(idx, sidecar));
+  }
+
   /// Executes this RPC. If the remote service is too busy, execution is re-attempted up
   /// to a fixed number of times, after which an error is returned. Retries are attempted
   /// only if the remote server signals that it is too busy. Retries are spaced by the
@@ -114,21 +134,26 @@ class Rpc {
 
     std::unique_ptr<P> proxy;
     RETURN_IF_ERROR(mgr_->GetProxy(remote_, &proxy));
-    kudu::rpc::RpcController controller;
+    controller_.reset(new kudu::rpc::RpcController());
     for (int i = 0; i < max_rpc_attempts_; ++i) {
-      controller.Reset();
-      controller.set_timeout(rpc_timeout_);
+      controller_->Reset();
+      controller_->set_timeout(rpc_timeout_);
+      for (const auto& sidecar: outbound_sidecars_) {
+        int dummy;
+        controller_->AddOutboundSidecar(
+            kudu::rpc::RpcSidecar::FromSlice(sidecar), &dummy);
+      }
 
-      ((proxy.get())->*func)(req, resp, &controller);
-      if (controller.status().ok()) return Status::OK();
+      ((proxy.get())->*func)(req, resp, controller_.get());
+      if (controller_->status().ok()) return Status::OK();
 
       // Retry only if the remote is too busy. Otherwise we fail fast.
-      if (!IsRetryableError(controller)) return FromKuduStatus(controller.status());
+      if (!IsRetryableError(*controller_)) return FromKuduStatus(controller_->status());
 
       SleepForMs(retry_interval_ms_);
     }
 
-    return FromKuduStatus(controller.status());
+    return FromKuduStatus(controller_->status());
   }
 
   /// Wrapper for Execute() that handles serialization from and to Thrift
@@ -138,13 +163,30 @@ class Rpc {
   template <typename F, typename TREQ, typename TRESP>
   Status ExecuteWithThriftArgs(const F& func, TREQ* req, TRESP* resp) {
     ThriftWrapperPb request_proto;
-    RETURN_IF_ERROR(SerializeThriftToProtoWrapper(req, &request_proto));
+    string serialized;
+    ThriftSerializer serializer(true);
+    RETURN_IF_ERROR(serializer.Serialize(req, &serialized));
+    int idx = -1;
+    AddSidecar(kudu::Slice(serialized), &idx);
+    request_proto.set_sidecar_idx(idx);
 
     ThriftWrapperPb response_proto;
     RETURN_IF_ERROR(Execute(func, request_proto, &response_proto));
+    kudu::Slice sidecar;
+    RETURN_IF_ERROR(GetInboundSidecar(response_proto.sidecar_idx(), &sidecar));
 
-    RETURN_IF_ERROR(DeserializeThriftFromProtoWrapper(response_proto, resp));
+    uint32_t len = sidecar.size();
+    RETURN_IF_ERROR(DeserializeThriftMsg(sidecar.data(), &len, true, resp));
     return Status::OK();
+  }
+
+  Rpc(const Rpc& other) {
+    rpc_timeout_ = other.rpc_timeout_;
+    max_rpc_attempts_ = other.max_rpc_attempts_;
+    retry_interval_ms_ = other.retry_interval_ms_;
+    remote_ = other.remote_;
+    outbound_sidecars_ = other.outbound_sidecars_;
+    mgr_ = other.mgr_;
   }
 
  private:
@@ -160,7 +202,16 @@ class Rpc {
   int32_t retry_interval_ms_ = RPC_DEFAULT_RETRY_INTERVAL_MS;
 
   /// The address of the remote machine to send the RPC to.
-  const TNetworkAddress remote_;
+  TNetworkAddress remote_;
+
+  // Rpc controller storage. Used only for synchronous RPCs so that the caller can access
+  // sidecar memory after the RPC returns. For asynchronous RPCs the caller is called
+  // with the controller as an argument.
+  std::unique_ptr<kudu::rpc::RpcController> controller_;
+
+  // List of outbound sidecars that will be serialized after the request payload during
+  // Execute(). The memory backing these slices is not owned by this object.
+  std::vector<kudu::Slice> outbound_sidecars_;
 
   /// The RpcMgr handling this RPC.
   RpcMgr* mgr_ = nullptr;
@@ -176,6 +227,27 @@ class Rpc {
         && err->code() == kudu::rpc::ErrorStatusPB::ERROR_SERVER_TOO_BUSY;
   }
 };
+
+template <typename T>
+Status DeserializeFromSidecar(kudu::rpc::RpcContext* context, int idx, T* output) {
+  kudu::Slice slice;
+  RETURN_IF_ERROR(FromKuduStatus(context->GetInboundSidecar(idx, &slice)));
+  uint32_t len = slice.size();
+  return DeserializeThriftMsg(slice.data(), &len, true, output);
+}
+
+template <typename T>
+Status SerializeToSidecar(kudu::rpc::RpcContext* context, T* input, ThriftWrapperPb* container) {
+  ThriftSerializer serializer(true);
+  std::unique_ptr<kudu::faststring> buffer(new kudu::faststring());
+  RETURN_IF_ERROR(serializer.Serialize(input, buffer.get()));
+  int idx;
+  RETURN_IF_ERROR(FromKuduStatus(context->AddOutboundSidecar(
+              kudu::rpc::RpcSidecar::FromFaststring(std::move(buffer)), &idx)));
+  container->set_sidecar_idx(idx);
+  return Status::OK();
+}
+
 }
 
 #endif
