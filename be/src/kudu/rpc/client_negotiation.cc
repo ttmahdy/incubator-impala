@@ -51,6 +51,7 @@
 #include "kudu/util/net/socket.h"
 #include "kudu/util/scoped_cleanup.h"
 #include "kudu/util/trace.h"
+#include "rpc/authentication-export.h"
 
 using std::map;
 using std::set;
@@ -60,6 +61,7 @@ using std::unique_ptr;
 using strings::Substitute;
 
 DECLARE_bool(rpc_encrypt_loopback_connections);
+DECLARE_string(keytab_file);
 
 namespace kudu {
 namespace rpc {
@@ -283,10 +285,17 @@ Status ClientNegotiation::InitSaslClient() {
   // TODO(KUDU-1922): consider setting SASL_SUCCESS_DATA
   unsigned flags = 0;
 
+  const char* service_name;
+  if (!FLAGS_keytab_file.empty()) {
+    service_name = impala::GetSaslProtoName().c_str();
+  } else {
+    service_name = kSaslProtoName;
+  }
+
   sasl_conn_t* sasl_conn = nullptr;
   RETURN_NOT_OK_PREPEND(WrapSaslCall(nullptr /* no conn */, [&]() {
       return sasl_client_new(
-          kSaslProtoName,               // Registered name of the service using SASL. Required.
+          service_name,                 // Registered name of the service using SASL. Required.
           helper_.server_fqdn(),        // The fully qualified domain name of the remote server.
           nullptr,                      // Local and remote IP address strings. (we don't use
           nullptr,                      // any mechanisms which require this info.)

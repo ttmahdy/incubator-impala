@@ -51,6 +51,7 @@
 #include "kudu/util/net/socket.h"
 #include "kudu/util/scoped_cleanup.h"
 #include "kudu/util/trace.h"
+#include "rpc/authentication-export.h"
 
 using std::set;
 using std::string;
@@ -66,6 +67,7 @@ TAG_FLAG(rpc_inject_invalid_authn_token_ratio, runtime);
 TAG_FLAG(rpc_inject_invalid_authn_token_ratio, unsafe);
 
 DECLARE_bool(rpc_encrypt_loopback_connections);
+DECLARE_string(keytab_file);
 
 DEFINE_string(trusted_subnets,
               "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16",
@@ -140,6 +142,11 @@ ServerNegotiation::ServerNegotiation(unique_ptr<Socket> socket,
       reinterpret_cast<int (*)()>(&ServerNegotiationGetoptCb), this));
   callbacks_.push_back(SaslBuildCallback(SASL_CB_SERVER_USERDB_CHECKPASS,
       reinterpret_cast<int (*)()>(&ServerNegotiationPlainAuthCb), this));
+
+  if (!FLAGS_keytab_file.empty()) {
+    callbacks_.push_back(SaslBuildCallback(SASL_CB_PROXY_POLICY,
+        reinterpret_cast<int (*)()>(&impala::ImpalaSaslAuthorizeInternal), nullptr));
+  }
   callbacks_.push_back(SaslBuildCallback(SASL_CB_LIST_END, nullptr, nullptr));
 }
 
@@ -371,15 +378,25 @@ Status ServerNegotiation::InitSaslServer() {
   // TODO(unknown): Support security flags.
   unsigned secflags = 0;
 
+  const char* service_name;
+  const char* realm;
+  if (!FLAGS_keytab_file.empty()) {
+    service_name = impala::GetSaslProtoName().c_str();
+    realm = impala::GetKerberosRealm().c_str();
+  } else {
+    service_name = kSaslProtoName;
+    realm = nullptr;
+  }
+
   sasl_conn_t* sasl_conn = nullptr;
   RETURN_NOT_OK_PREPEND(WrapSaslCall(nullptr /* no conn */, [&]() {
       return sasl_server_new(
           // Registered name of the service using SASL. Required.
-          kSaslProtoName,
+          service_name,
           // The fully qualified domain name of this server.
           helper_.server_fqdn(),
           // Permits multiple user realms on server. NULL == use default.
-          nullptr,
+          realm,
           // Local and remote IP address strings. We don't use any mechanisms
           // which need these.
           nullptr,

@@ -42,7 +42,7 @@ static const char *env_princ = NULL;
 
 namespace impala {
 
-int SaslAuthorizeInternal(sasl_conn_t* conn, void* context,
+int ImpalaSaslAuthorizeInternal(sasl_conn_t* conn, void* context,
     const char* requested_user, unsigned rlen,
     const char* auth_identity, unsigned alen,
     const char* def_realm, unsigned urlen,
@@ -63,13 +63,13 @@ TEST(Auth, PrincipalSubstitution) {
 
 void AuthOk(const string& name, SaslAuthProvider* sa) {
   EXPECT_EQ(SASL_OK,
-      SaslAuthorizeInternal(NULL, (void*)sa, name.c_str(), name.size(), NULL, 0, NULL, 0,
+      ImpalaSaslAuthorizeInternal(NULL, (void*)sa, name.c_str(), name.size(), NULL, 0, NULL, 0,
           NULL));
 }
 
 void AuthFails(const string& name, SaslAuthProvider* sa) {
   EXPECT_EQ(SASL_BADAUTH,
-      SaslAuthorizeInternal(NULL, (void*)sa, name.c_str(), name.size(), NULL, 0, NULL, 0,
+      ImpalaSaslAuthorizeInternal(NULL, (void*)sa, name.c_str(), name.size(), NULL, 0, NULL, 0,
           NULL));
 }
 
