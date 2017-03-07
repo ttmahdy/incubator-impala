@@ -471,11 +471,9 @@ Status Statestore::SendTopicUpdate(Subscriber* subscriber, bool* update_skipped)
 
   // At this point the updates are assumed to have been successfully processed by the
   // subscriber. Update the subscriber's max version of each topic.
-  map<TopicEntryKey, TTopicDelta>::const_iterator topic_delta =
-      update_state_request.topic_deltas.begin();
-  for (; topic_delta != update_state_request.topic_deltas.end(); ++topic_delta) {
-    subscriber->SetLastTopicVersionProcessed(topic_delta->first,
-        topic_delta->second.to_version);
+  for (const auto& topic_delta : update_state_request.topic_deltas) {
+    subscriber->SetLastTopicVersionProcessed(
+        topic_delta.first, topic_delta.second.to_version);
   }
 
   // Thirdly: perform any / all updates returned by the subscriber
@@ -504,14 +502,15 @@ Status Statestore::SendTopicUpdate(Subscriber* subscriber, bool* update_skipped)
 
       Topic* topic = &topic_it->second;
       for (const TTopicItem& item: update.topic_entries) {
-        TopicEntry::Version version = topic->Put(item.key, item.value);
+        if (item.key.size() + item.value.size() > max_topic_update_size_) {
+          LOG(WARNING) << "Topic update to key " << item.key << " is too large and will "
+                       << "be ignored. Maximum is "
+                       << PrettyPrinter::Print(max_topic_update_size_, TUnit::BYTES);
+          continue;
+        }
+        TopicEntry::Version version = topic->Put(
+            item.key, item.deleted ? Statestore::TopicEntry::NULL_VALUE : item.value);
         subscriber->AddTransientUpdate(update.topic_name, item.key, version);
-      }
-
-      for (const string& key: update.topic_deletions) {
-        TopicEntry::Version version =
-            topic->Put(key, Statestore::TopicEntry::NULL_VALUE);
-        subscriber->AddTransientUpdate(update.topic_name, key, version);
       }
     }
   }
@@ -521,6 +520,7 @@ Status Statestore::SendTopicUpdate(Subscriber* subscriber, bool* update_skipped)
 
 void Statestore::GatherTopicUpdates(const Subscriber& subscriber,
     TUpdateStateRequest* update_state_request) {
+  int64_t update_byte_size = 0;
   {
     lock_guard<mutex> l(topic_lock_);
     for (const Subscriber::Topics::value_type& subscribed_topic:
@@ -554,25 +554,32 @@ void Statestore::GatherTopicUpdates(const Subscriber& subscriber,
       TopicUpdateLog::const_iterator next_update =
           topic.topic_update_log().upper_bound(last_processed_version);
 
+      TopicEntry::Version last_update_version = last_processed_version;
       for (; next_update != topic.topic_update_log().end(); ++next_update) {
         TopicEntryMap::const_iterator itr = topic.entries().find(next_update->second);
         DCHECK(itr != topic.entries().end());
         const TopicEntry& topic_entry = itr->second;
-        if (topic_entry.value() == Statestore::TopicEntry::NULL_VALUE) {
-          topic_delta.topic_deletions.push_back(itr->first);
-        } else {
-          topic_delta.topic_entries.push_back(TTopicItem());
-          TTopicItem& topic_item = topic_delta.topic_entries.back();
-          topic_item.key = itr->first;
-          // TODO: Does this do a needless copy?
-          topic_item.value = topic_entry.value();
+        bool is_deletion = topic_entry.value() == Statestore::TopicEntry::NULL_VALUE;
+        if (is_deletion && !topic_delta.is_delta) continue;
+        int64_t entry_size =
+            itr->first.size() + (is_deletion ? 0 : topic_entry.value().size());
+        if (update_byte_size + entry_size > max_topic_update_size_) {
+          break;
         }
+        update_byte_size += entry_size;
+        topic_delta.topic_entries.push_back(TTopicItem());
+        TTopicItem& topic_item = topic_delta.topic_entries.back();
+        topic_item.key = itr->first;
+        // TODO: Does this do a needless copy?
+        topic_item.deleted = is_deletion;
+        if (!is_deletion) topic_item.value = topic_entry.value();
+        last_update_version = next_update->first;
       }
 
       if (topic.topic_update_log().size() > 0) {
-        // The largest version for this topic will be the last item in the version history
-        // map.
-        topic_delta.__set_to_version(topic.topic_update_log().rbegin()->first);
+        // The largest version for this topic will be the last item included in the topic
+        // update.
+        topic_delta.__set_to_version(last_update_version);
       } else {
         // There are no updates in the version history
         topic_delta.__set_to_version(Subscriber::TOPIC_INITIAL_VERSION);

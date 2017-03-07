@@ -324,12 +324,10 @@ void CatalogServer::BuildTopicUpdates(const vector<TCatalogObject>& catalog_obje
     // This isn't a new or an updated item, skip it.
     if (catalog_object.catalog_version <= last_sent_catalog_version_) continue;
 
-    VLOG(1) << "Publishing update: " << entry_key << "@"
-            << catalog_object.catalog_version;
-
     pending_topic_updates_.push_back(TTopicItem());
     TTopicItem& item = pending_topic_updates_.back();
     item.key = entry_key;
+    item.deleted = false;
     Status status = thrift_serializer_.Serialize(&catalog_object, &item.value);
     if (!status.ok()) {
       LOG(ERROR) << "Error serializing topic value: " << status.GetDetail();
@@ -343,6 +341,9 @@ void CatalogServer::BuildTopicUpdates(const vector<TCatalogObject>& catalog_obje
         pending_topic_updates_.pop_back();
       }
     }
+    VLOG(1) << "Publishing update: " << entry_key << "@"
+            << catalog_object.catalog_version << " (size " << PrettyPrinter::Print(item.value.size(), TUnit::BYTES);
+
   }
 
   // Any remaining items in catalog_topic_entry_keys_ indicate the object was removed
@@ -351,6 +352,7 @@ void CatalogServer::BuildTopicUpdates(const vector<TCatalogObject>& catalog_obje
     pending_topic_updates_.push_back(TTopicItem());
     TTopicItem& item = pending_topic_updates_.back();
     item.key = key;
+    item.deleted = true;
     VLOG(1) << "Publishing deletion: " << key;
     // Don't set a value to mark this item as deleted.
   }

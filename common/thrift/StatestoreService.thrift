@@ -85,6 +85,9 @@ struct TTopicItem {
   // Byte-string value for this topic entry. May not be null-terminated (in that it may
   // contain null bytes)
   2: required string value;
+
+  // If true, this item was deleted (and 'value' should be the empty string)
+  3: required bool deleted = false;
 }
 
 // Set of changes to a single topic, sent from the statestore to a subscriber as well as
@@ -93,15 +96,12 @@ struct TTopicDelta {
   // Name of the topic this delta applies to
   1: required string topic_name;
 
-  // List of changes to topic entries
+  // List of changes to topic entries, including deletions.
   2: required list<TTopicItem> topic_entries;
-
-  // List of topic item keys whose entries have been deleted
-  3: required list<string> topic_deletions;
 
   // True if entries / deletions are to be applied to in-memory state,
   // otherwise topic_entries contains entire topic state.
-  4: required bool is_delta;
+  3: required bool is_delta;
 
   // The Topic version range this delta covers. If there have been changes to the topic,
   // the update will include all changes in the range: [from_version, to_version).
@@ -110,15 +110,15 @@ struct TTopicDelta {
   // If this is an update being sent from a subscriber to the statestore, the from_version
   // is set only when recovering from an inconsistent state, to the last version of the
   // topic the subscriber successfully processed.
-  5: optional i64 from_version
-  6: optional i64 to_version
+  4: optional i64 from_version
+  5: optional i64 to_version
 
   // The minimum topic version of all subscribers to the topic. This can be used to
   // determine when all subscribers have successfully processed a specific update.
   // This is guaranteed because no subscriber will ever be sent a topic containing
   // keys with a version < min_subscriber_topic_version. Only used when sending an update
   // from the statestore to a subscriber.
-  7: optional i64 min_subscriber_topic_version
+  6: optional i64 min_subscriber_topic_version
 }
 
 // Description of a topic to subscribe to as part of a RegisterSubscriber call

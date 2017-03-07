@@ -123,6 +123,9 @@ class Statestore : public CacheLineAligned {
 
   RpcMgr* rpc_mgr() { return &rpc_mgr_; }
 
+  /// Sets the maximum size of a single topic update message.
+  void SetMaxTopicUpdateSize(int64_t max_size) { max_topic_update_size_ = max_size; }
+
  private:
   /// A TopicEntry is a single entry in a topic, and logically is a <string, byte string>
   /// pair. If the byte string is NULL, the entry has been deleted, but may be retained to
@@ -405,6 +408,10 @@ class Statestore : public CacheLineAligned {
 
   /// RpcMgr with which the StatestoreService is registered.
   RpcMgr rpc_mgr_;
+
+  /// Maximum size of a topic update. One single topic key + value may not exceed this
+  /// size. Topic updates which are larger than this value are split over several updates.
+  int64_t max_topic_update_size_ = 2147483647; // 2GB
 
   /// Metric that track the registered, non-failed subscribers.
   IntGauge* num_subscribers_metric_;

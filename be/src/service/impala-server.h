@@ -1010,6 +1010,10 @@ class ImpalaServer : public ImpalaServiceIf,
 
   /// Set to true when this ImpalaServer should shut down.
   Promise<bool> shutdown_promise_;
+
+  /// Buffered list of requests seen since the last catalog version. When a new CATALOG
+  /// object update is seen, these are flushed to the catalog in one atomic update.
+  vector<TUpdateCatalogCacheRequest> update_reqs_;
 };
 
 }

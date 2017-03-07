@@ -474,7 +474,10 @@ void SchedulerWrapper::RemoveBackend(const Host& host) {
   TTopicDelta delta;
   delta.topic_name = Scheduler::IMPALA_MEMBERSHIP_TOPIC;
   delta.is_delta = true;
-  delta.topic_deletions.push_back(host.ip);
+  TTopicItem deleted;
+  deleted.key = host.ip;
+  deleted.deleted = true;
+  delta.topic_entries.push_back(deleted);
   SendTopicDelta(delta);
 }
 

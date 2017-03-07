@@ -212,7 +212,6 @@ class StatestoreTest : public testing::Test {
     TTopicDelta delta;
     delta.__set_topic_name(topic_name);
     delta.__set_topic_entries({item});
-    delta.__set_topic_deletions({});
     delta.__set_is_delta(false);
     return delta;
   }
@@ -283,13 +282,11 @@ TEST_F(StatestoreTest, ReceiveUpdates) {
       TTopicDelta d = request->topic_deltas[topic_name];
       ASSERT_EQ(d.topic_entries, delta.topic_entries);
       ASSERT_EQ(d.topic_name, delta.topic_name);
-      ASSERT_EQ(d.topic_deletions, delta.topic_deletions);
       return;
     }
 
     if (sub->update_state_count() == 3) {
       ASSERT_EQ(0, request->topic_deltas[topic_name].topic_entries.size());
-      ASSERT_EQ(0, request->topic_deltas[topic_name].topic_deletions.size());
     }
   };
 
@@ -412,16 +409,16 @@ TEST_F(StatestoreTest, TopicPersistence) {
       // Check the transient topic exists, but has no entries.
       ASSERT_TRUE(request->topic_deltas.find(transient_topic_name)
           != request->topic_deltas.end());
+
+      ASSERT_FALSE(request->topic_deltas[transient_topic_name].is_delta);
+      // Statestore should not send the deletions when the update is not a delta, so
+      // expect 0 updates. See IMPALA-1891.
       ASSERT_EQ(0, request->topic_deltas[transient_topic_name].topic_entries.size());
 
       // Check that the persistent topic has entries.
       ASSERT_TRUE(request->topic_deltas.find(persistent_topic_name)
           != request->topic_deltas.end());
       ASSERT_EQ(1, request->topic_deltas[persistent_topic_name].topic_entries.size());
-
-      // Statestore should not send deletions when the update is not a delta, see
-      // IMPALA-1891
-      // ASSERT_EQ(0, request->topic_deltas[transient_topic_name].topic_deletions.size());
     }
   };
 
@@ -446,10 +443,141 @@ TEST_F(StatestoreTest, TopicPersistence) {
   subscribers_[1]->WaitForUpdates(2);
 }
 
+TEST_F(StatestoreTest, SubscriberChangesFromVersion) {
+  string topic_name = "from_version";
+  // Test that the subscriber can control the updates it receives by manipulating the
+  // 'from_version' in its response.
+  auto add_entries = [topic_name](
+      TestSubscriber* sub, TUpdateStateRequest* request, TUpdateStateResponse* response) {
+    if (sub->update_state_count() == 1) {
+      Status::OK().ToThrift(&response->status);
+      vector<TTopicItem> items;
+      for (auto i : {1, 2, 3, 4, 5, 6}) {
+        TTopicItem item;
+        item.__set_key(Substitute("item-$0", i));
+        // Third item should be too large to handle, and should be dropped.
+        item.__set_value("a");
+        items.push_back(item);
+      }
+
+      TTopicDelta delta;
+      delta.__set_topic_name(topic_name);
+      delta.__set_topic_entries(items);
+      delta.__set_is_delta(false);
+      response->__set_topic_updates({delta});
+      response->__set_skipped(false);
+    }
+  };
+
+  auto check_entries = [topic_name](
+      TestSubscriber* sub, TUpdateStateRequest* request, TUpdateStateResponse* response) {
+    if (sub->update_state_count() == 1) {
+      const TTopicDelta& tpc = request->topic_deltas[topic_name];
+      ASSERT_EQ(6, tpc.topic_entries.size());
+      TTopicDelta delta;
+      delta.topic_name = topic_name;
+      delta.from_version = 3;
+      delta.__isset.from_version = true;
+      response->topic_updates.push_back(delta);
+    }
+
+    if (sub->update_state_count() == 2) {
+      const TTopicDelta& tpc = request->topic_deltas[topic_name];
+      ASSERT_EQ(3, tpc.topic_entries.size());
+      for (int i = 4; i <= 6; ++i) {
+        ASSERT_EQ(tpc.topic_entries[i - 4].key, Substitute("item-$0", i));
+      }
+    }
+  };
+
+  InitSubscribers(2);
+  subscribers_[0]->SetUpdateStateCallback(add_entries);
+  subscribers_[1]->SetUpdateStateCallback(check_entries);
+
+  TTopicRegistration reg;
+  reg.__set_topic_name(topic_name);
+  reg.__set_is_transient(true);
+  vector<TTopicRegistration> regs = {reg};
+
+  ASSERT_OK(subscribers_[0]->Register(regs));
+  subscribers_[0]->WaitForUpdates(2);
+
+  ASSERT_OK(subscribers_[1]->Register(regs));
+  subscribers_[1]->WaitForUpdates(2);
+}
+
+TEST_F(StatestoreTest, UpdateTooLarge) {
+  string topic_name = "too_large";
+  constexpr int64_t MAX_UPDATE = 4096;
+  statestore_->SetMaxTopicUpdateSize(MAX_UPDATE);
+
+  auto add_entries = [topic_name](
+      TestSubscriber* sub, TUpdateStateRequest* request, TUpdateStateResponse* response) {
+    if (sub->update_state_count() == 1) {
+      Status::OK().ToThrift(&response->status);
+      vector<TTopicItem> items;
+      for (auto i : {1, 2, 3}) {
+        TTopicItem item;
+        item.__set_key(Substitute("item-$0", i));
+        // Third item should be too large to handle, and should be dropped.
+        item.__set_value(string(i == 3 ? MAX_UPDATE : (MAX_UPDATE / 2), 'a'));
+        items.push_back(item);
+      }
+
+      TTopicDelta delta;
+      delta.__set_topic_name(topic_name);
+      delta.__set_topic_entries(items);
+      delta.__set_is_delta(false);
+      response->__set_topic_updates({delta});
+      response->__set_skipped(false);
+    }
+  };
+
+  auto check_entries = [topic_name](
+      TestSubscriber* sub, TUpdateStateRequest* request, TUpdateStateResponse* response) {
+    if (sub->update_state_count() == 1) {
+      ASSERT_TRUE(request->topic_deltas.find(topic_name) != request->topic_deltas.end());
+      const auto& delta = request->topic_deltas[topic_name];
+      ASSERT_EQ(1, delta.topic_entries.size());
+      ASSERT_EQ(0, delta.from_version);
+      ASSERT_EQ(1, delta.to_version);
+      ASSERT_EQ("item-1", delta.topic_entries[0].key);
+    }
+    if (sub->update_state_count() == 2) {
+      ASSERT_TRUE(request->topic_deltas.find(topic_name) != request->topic_deltas.end());
+      const auto& delta = request->topic_deltas[topic_name];
+      ASSERT_EQ(1, delta.topic_entries.size());
+      ASSERT_EQ(1, delta.from_version);
+      ASSERT_EQ(2, delta.to_version);
+      ASSERT_EQ("item-2", delta.topic_entries[0].key);
+      ASSERT_EQ(string(MAX_UPDATE / 2, 'a'), delta.topic_entries[0].value);
+    }
+    if (sub->update_state_count() == 3) {
+      ASSERT_TRUE(request->topic_deltas.find(topic_name) != request->topic_deltas.end());
+      ASSERT_EQ(0, request->topic_deltas[topic_name].topic_entries.size());
+    }
+  };
+
+  InitSubscribers(2);
+  subscribers_[0]->SetUpdateStateCallback(add_entries);
+  subscribers_[1]->SetUpdateStateCallback(check_entries);
+
+  TTopicRegistration reg;
+  reg.__set_topic_name(topic_name);
+  reg.__set_is_transient(true);
+  vector<TTopicRegistration> regs = {reg};
+
+  ASSERT_OK(subscribers_[0]->Register(regs));
+  subscribers_[0]->WaitForUpdates(2);
+
+  ASSERT_OK(subscribers_[1]->Register(regs));
+  subscribers_[1]->WaitForUpdates(3);
+}
+
 TEST_F(StatestoreTest, VeryLargeTopic) {
   string topic_name = "very_large_topic";
-  constexpr int SIZE = 1024 * 1024 * 100;
-  constexpr int NUM_ENTRIES = 10;
+  static constexpr int SIZE = 1024 * 1024 * 100;
+  static constexpr int NUM_ENTRIES = 10;
   auto add_entries = [topic_name]
       (TestSubscriber* sub, TUpdateStateRequest* request, TUpdateStateResponse* response) {
     if (sub->update_state_count() == 1) {
@@ -465,7 +593,6 @@ TEST_F(StatestoreTest, VeryLargeTopic) {
       TTopicDelta delta;
       delta.__set_topic_name(topic_name);
       delta.__set_topic_entries(items);
-      delta.__set_topic_deletions({});
       delta.__set_is_delta(false);
       vector<TTopicDelta> deltas = {delta};
       response->__set_topic_updates(deltas);

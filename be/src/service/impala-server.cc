@@ -1240,19 +1240,66 @@ void ImpalaServer::CatalogUpdateCallback(
   if (topic == incoming_topic_deltas.end()) return;
   const TTopicDelta& delta = topic->second;
 
+  // Iterate over all updates, gathering them together in update_reqs_ until a CATALOG
+  // update is seen. This update acts as the end-of-version marker for a single catalog
+  // metadata update. Once that update has been seen, the updates gathered in update_reqs_
+  // may be flushed to the catalog so that they appear to be atomic. The statestore may
+  // split a single catalog version across two topic update RPCs, which is why updates
+  // must be buffered until the CATALOG update is seen. For any single topic update, any
+  // trailing updates after the CATALOG update are discarded, and the statestore can
+  // re-send them.
+
+  // Becomes true if we find a CATALOG object update (which terminates a complete catalog
+  // version update). Any updates after that are ignored (and will be resent by the
+  // statestore with their own terminal CATALOG object).
+  bool complete_catalog_update = false;
+  // We need to look up the dropped functions and data sources and remove them
+  // from the library cache. The data sent from the catalog service does not
+  // contain all the function metadata so we'll ask our local frontend for it. We
+  // need to do this before updating the catalog.
+  vector<TCatalogObject> dropped_objects;
 
   // Update catalog cache in frontend. An update is split into batches of size
   // MAX_CATALOG_UPDATE_BATCH_SIZE_BYTES each for multiple updates. IMPALA-3499
-  if (delta.topic_entries.size() != 0 || delta.topic_deletions.size() != 0)  {
-    vector<TUpdateCatalogCacheRequest> update_reqs;
-    update_reqs.push_back(TUpdateCatalogCacheRequest());
-    TUpdateCatalogCacheRequest* incremental_request = &update_reqs.back();
+  if (!delta.topic_entries.empty())  {
+    update_reqs_.push_back(TUpdateCatalogCacheRequest());
+    TUpdateCatalogCacheRequest* incremental_request = &update_reqs_.back();
     incremental_request->__set_is_delta(delta.is_delta);
-    // Process all Catalog updates (new and modified objects) and determine what the
-    // new catalog version will be.
+    // Process all Catalog updates and determine what the new catalog version will be.
     int64_t new_catalog_version = catalog_update_info_.catalog_version;
     uint64_t batch_size_bytes = 0;
     for (const TTopicItem& item: delta.topic_entries) {
+      if (item.deleted) {
+        // Process a dropped object. We only know the keys (object names) so must parse
+        // each key to determine the TCatalogObject.
+        LOG(INFO) << "Catalog topic entry deletion: " << item.key;
+        TCatalogObject catalog_object;
+        Status status = TCatalogObjectFromEntryKey(item.key, &catalog_object);
+        if (!status.ok()) {
+          LOG(ERROR) << "Error parsing catalog topic entry deletion key: " << item.key
+                     << " " << "Error: " << status.GetDetail();
+          continue;
+        }
+        incremental_request->removed_objects.push_back(catalog_object);
+        if (!(catalog_object.type == TCatalogObjectType::FUNCTION ||
+                catalog_object.type == TCatalogObjectType::DATA_SOURCE)) {
+          continue;
+        }
+        TCatalogObject dropped_object;
+        if (exec_env_->frontend()->GetCatalogObject(catalog_object, &dropped_object).ok()) {
+          // This object may have been dropped and re-created. To avoid removing the
+          // re-created object's entry from the cache verify the existing object has a
+          // catalog version <= the catalog version included in this statestore
+          // heartbeat.
+          if (dropped_object.catalog_version <= new_catalog_version) {
+              dropped_objects.push_back(dropped_object);
+          }
+        }
+        // End deletion handling, skip to next topic update.
+        continue;
+      }
+
+      // Handle an update to the topic entry.
       TCatalogObject catalog_object;
       Status status;
       vector<uint8_t> data_buffer;
@@ -1279,11 +1326,11 @@ void ImpalaServer::CatalogUpdateCallback(
         continue;
       }
       if (len > 100 * 1024 * 1024 /* 100MB */) {
-        LOG(INFO) << "Received large catalog update(>100mb): "
-                     << item.key << " is "
-                     << PrettyPrinter::Print(len, TUnit::BYTES);
+        LOG(INFO) << "Received large catalog update(>100mb): " << item.key << " is "
+                  << PrettyPrinter::Print(len, TUnit::BYTES);
       }
       if (catalog_object.type == TCatalogObjectType::CATALOG) {
+        complete_catalog_update = true;
         incremental_request->__set_catalog_service_id(
             catalog_object.catalog.catalog_service_id);
         new_catalog_version = catalog_object.catalog_version;
@@ -1302,86 +1349,50 @@ void ImpalaServer::CatalogUpdateCallback(
       }
 
       if (batch_size_bytes + len > MAX_CATALOG_UPDATE_BATCH_SIZE_BYTES) {
-        update_reqs.push_back(TUpdateCatalogCacheRequest());
-        incremental_request = &update_reqs.back();
+        update_reqs_.push_back(TUpdateCatalogCacheRequest());
+        incremental_request = &update_reqs_.back();
         batch_size_bytes = 0;
       }
       incremental_request->updated_objects.push_back(catalog_object);
       batch_size_bytes += len;
     }
-    update_reqs.push_back(TUpdateCatalogCacheRequest());
-    TUpdateCatalogCacheRequest* deletion_request = &update_reqs.back();
-
-    // We need to look up the dropped functions and data sources and remove them
-    // from the library cache. The data sent from the catalog service does not
-    // contain all the function metadata so we'll ask our local frontend for it. We
-    // need to do this before updating the catalog.
-    vector<TCatalogObject> dropped_objects;
-
-    // Process all Catalog deletions (dropped objects). We only know the keys (object
-    // names) so must parse each key to determine the TCatalogObject.
-    for (const string& key: delta.topic_deletions) {
-      LOG(INFO) << "Catalog topic entry deletion: " << key;
-      TCatalogObject catalog_object;
-      Status status = TCatalogObjectFromEntryKey(key, &catalog_object);
-      if (!status.ok()) {
-        LOG(ERROR) << "Error parsing catalog topic entry deletion key: " << key << " "
-                   << "Error: " << status.GetDetail();
-        continue;
-      }
-      deletion_request->removed_objects.push_back(catalog_object);
-      if (catalog_object.type == TCatalogObjectType::FUNCTION ||
-          catalog_object.type == TCatalogObjectType::DATA_SOURCE) {
-        TCatalogObject dropped_object;
-        if (exec_env_->frontend()->GetCatalogObject(
-                catalog_object, &dropped_object).ok()) {
-          // This object may have been dropped and re-created. To avoid removing the
-          // re-created object's entry from the cache verify the existing object has a
-          // catalog version <= the catalog version included in this statestore heartbeat.
-          if (dropped_object.catalog_version <= new_catalog_version) {
-            if (catalog_object.type == TCatalogObjectType::FUNCTION ||
-                catalog_object.type == TCatalogObjectType::DATA_SOURCE) {
-              dropped_objects.push_back(dropped_object);
-            }
-          }
-        }
-        // Nothing to do in error case.
-      }
-    }
 
     // Call the FE to apply the changes to the Impalad Catalog.
-    TUpdateCatalogCacheResponse resp;
-    Status s = exec_env_->frontend()->UpdateCatalogCache(update_reqs, &resp);
-    if (!s.ok()) {
-      LOG(ERROR) << "There was an error processing the impalad catalog update. Requesting"
-                 << " a full topic update to recover: " << s.GetDetail();
-      subscriber_topic_updates->push_back(TTopicDelta());
-      TTopicDelta& update = subscriber_topic_updates->back();
-      update.topic_name = CatalogServer::IMPALA_CATALOG_TOPIC;
-      update.__set_from_version(0L);
-      ImpaladMetrics::CATALOG_READY->set_value(false);
-      // Dropped all cached lib files (this behaves as if all functions and data
-      // sources are dropped).
-      LibCache::instance()->DropCache();
-    } else {
-      {
-        unique_lock<mutex> unique_lock(catalog_version_lock_);
-        catalog_update_info_.catalog_version = new_catalog_version;
-        catalog_update_info_.catalog_topic_version = delta.to_version;
-        catalog_update_info_.catalog_service_id = resp.catalog_service_id;
-      }
-      ImpaladMetrics::CATALOG_READY->set_value(new_catalog_version > 0);
-      // TODO: deal with an error status
-      (void) UpdateCatalogMetrics();
-      // Remove all dropped objects from the library cache.
-      // TODO: is this expensive? We'd like to process heartbeats promptly.
-      for (TCatalogObject& object: dropped_objects) {
-        if (object.type == TCatalogObjectType::FUNCTION) {
-          LibCache::instance()->RemoveEntry(object.fn.hdfs_location);
-        } else if (object.type == TCatalogObjectType::DATA_SOURCE) {
-          LibCache::instance()->RemoveEntry(object.data_source.hdfs_location);
-        } else {
-          DCHECK(false);
+    if (complete_catalog_update) {
+      TUpdateCatalogCacheResponse resp;
+      Status s = exec_env_->frontend()->UpdateCatalogCache(update_reqs_, &resp);
+      update_reqs_.clear();
+      if (!s.ok()) {
+        LOG(ERROR) << "There was an error processing the impalad catalog update. "
+                   << "Requesting a full topic update to recover: " << s.GetDetail();
+        subscriber_topic_updates->push_back(TTopicDelta());
+        TTopicDelta& update = subscriber_topic_updates->back();
+        update.topic_name = CatalogServer::IMPALA_CATALOG_TOPIC;
+        update.__set_from_version(0L);
+        ImpaladMetrics::CATALOG_READY->set_value(false);
+        // Dropped all cached lib files (this behaves as if all functions and data
+        // sources are dropped).
+        LibCache::instance()->DropCache();
+      } else {
+        {
+          unique_lock<mutex> unique_lock(catalog_version_lock_);
+          catalog_update_info_.catalog_version = new_catalog_version;
+          catalog_update_info_.catalog_topic_version = delta.to_version;
+          catalog_update_info_.catalog_service_id = resp.catalog_service_id;
+        }
+        ImpaladMetrics::CATALOG_READY->set_value(new_catalog_version > 0);
+        // TODO: deal with an error status
+        (void) UpdateCatalogMetrics();
+        // Remove all dropped objects from the library cache.
+        // TODO: is this expensive? We'd like to process heartbeats promptly.
+        for (TCatalogObject& object: dropped_objects) {
+          if (object.type == TCatalogObjectType::FUNCTION) {
+            LibCache::instance()->RemoveEntry(object.fn.hdfs_location);
+          } else if (object.type == TCatalogObjectType::DATA_SOURCE) {
+            LibCache::instance()->RemoveEntry(object.data_source.hdfs_location);
+          } else {
+            DCHECK(false);
+          }
         }
       }
     }
@@ -1467,6 +1478,10 @@ void ImpalaServer::MembershipCallback(
 
     // Process membership additions.
     for (const TTopicItem& item: delta.topic_entries) {
+      if (item.deleted) {
+        known_backends_.erase(item.key);
+        continue;
+      }
       uint32_t len = item.value.size();
       TBackendDescriptor backend_descriptor;
       Status status = DeserializeThriftMsg(reinterpret_cast<const uint8_t*>(
@@ -1478,22 +1493,15 @@ void ImpalaServer::MembershipCallback(
       // This is a new item - add it to the map of known backends.
       known_backends_.insert(make_pair(item.key, backend_descriptor));
     }
-
     // Register the local backend in the statestore and update the list of known backends.
     AddLocalBackendToStatestore(subscriber_topic_updates);
-
-    // Process membership deletions.
-    for (const string& backend_id: delta.topic_deletions) {
-      known_backends_.erase(backend_id);
-    }
 
     // Create a set of known backend network addresses. Used to test for cluster
     // membership by network address.
     set<TNetworkAddress> current_membership;
     // Also reflect changes to the frontend. Initialized only if any_changes is true.
     TUpdateMembershipRequest update_req;
-    bool any_changes = !delta.topic_entries.empty() || !delta.topic_deletions.empty() ||
-        !delta.is_delta;
+    bool any_changes = !delta.topic_entries.empty() || !delta.is_delta;
     for (const BackendDescriptorMap::value_type& backend: known_backends_) {
       TNetworkAddress resolved =
           MakeNetworkAddress(backend.second.ip_address, backend.second.address.port);
