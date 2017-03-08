@@ -20,6 +20,8 @@
 #include "kudu/rpc/rpc_context.h"
 #include "kudu/rpc/rpc_controller.h"
 #include "kudu/rpc/rpc_header.pb.h"
+#include "kudu/security/test/mini_kdc.h"
+#include "rpc/authentication.h"
 #include "rpc/rpc-mgr.inline.h"
 #include "rpc/rpc_test.proxy.h"
 #include "rpc/rpc_test.service.h"
@@ -43,13 +45,39 @@ using kudu::rpc::ErrorStatusPB;
 
 using namespace std;
 
+DECLARE_string(keytab_file);
+DECLARE_string(principal);
+DECLARE_string(krb5_conf);
+
 DECLARE_int32(num_reactor_threads);
+
+using namespace kudu;
+
+static MiniKdc* kdc;
+void StartKdc() {
+  MiniKdcOptions options;
+  if (!kdc) kdc = new MiniKdc(options);
+  ASSERT_TRUE(kdc->Start().ok());
+  ASSERT_TRUE(kdc->SetKrb5Environment().ok());
+}
+
+void CreateServiceKeytab(const string& spn, string* kt_path) {
+  ASSERT_TRUE(kdc->CreateServiceKeytab(spn, kt_path).ok());
+}
+
+void StopKdc() {
+  ASSERT_TRUE(kdc->Stop().ok());
+}
 
 namespace impala {
 
 static int32_t SERVICE_PORT = FindUnusedEphemeralPort(nullptr);
 
-class RpcTest : public testing::Test {
+enum KerberosSwitch {
+  KERBEROS_OFF, KERBEROS_ON
+};
+
+template <class T> class RpcTestBase : public T {
  protected:
   RpcMgr rpc_mgr_;
   TNetworkAddress localhost_;
@@ -61,6 +89,50 @@ class RpcTest : public testing::Test {
 
   virtual void TearDown() { rpc_mgr_.UnregisterServices(); }
 };
+
+// For tests that do not require kerberized testing, we use RpcTest.
+class RpcTest : public RpcTestBase<testing::Test> {
+  virtual void SetUp() {
+    RpcTestBase::SetUp();
+  }
+
+  virtual void TearDown() {
+    RpcTestBase::TearDown();
+  }
+};
+
+// For tests that require testing with and without kerberos, we use RpcParamTest.
+// We generally wouldn't want longer running tests to run under both modes as it would
+// add to the overall testing time.
+class RpcParamTest : public RpcTestBase<testing::TestWithParam<KerberosSwitch> > {
+  virtual void SetUp() {
+    if (GetParam() == KERBEROS_ON) {
+      StartKdc();
+      string kt_path;
+      CreateServiceKeytab("impala-test/127.0.0.1", &kt_path);
+
+      FLAGS_keytab_file = kt_path;
+      FLAGS_principal = "impala-test/127.0.0.1@KRBTEST.COM";
+      FLAGS_krb5_conf = "/tmp/krb5kdc/krb5.conf";
+    }
+    ASSERT_OK(AuthManager::GetInstance()->Init());
+    RpcTestBase::SetUp();
+  }
+
+  virtual void TearDown() {
+    if (GetParam() == KERBEROS_ON) {
+      StopKdc();
+      FLAGS_keytab_file.clear();
+      FLAGS_principal.clear();
+      FLAGS_krb5_conf.clear();
+    }
+    RpcTestBase::TearDown();
+  }
+};
+
+INSTANTIATE_TEST_CASE_P(KerberosOnAndOff,
+                        RpcParamTest,
+                        ::testing::Values(KERBEROS_OFF, KERBEROS_ON));
 
 class PingServiceImpl : public PingServiceIf {
  public:
@@ -93,7 +165,7 @@ class PingServiceImpl : public PingServiceIf {
   std::function<void(RpcContext*)> cb_;
 };
 
-TEST_F(RpcTest, ServiceSmokeTest) {
+TEST_P(RpcParamTest, ServiceSmokeTest) {
   // Test that a service can be started, and will respond to requests.
   unique_ptr<ServiceIf> impl(
       new PingServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
@@ -111,7 +183,8 @@ TEST_F(RpcTest, ServiceSmokeTest) {
   rpc_mgr_.UnregisterServices();
 }
 
-TEST_F(RpcTest, RetryPolicyTest) {
+
+TEST_P(RpcParamTest, RetryPolicyTest) {
   // Test that retries happen the expected number of times.
   AtomicInt32 retries(0);
   auto cb = [&retries](RpcContext* context) {
@@ -148,7 +221,7 @@ TEST_F(RpcTest, RetryPolicyTest) {
   rpc_mgr_.UnregisterServices();
 }
 
-TEST_F(RpcTest, RetryAsyncTest) {
+TEST_P(RpcParamTest, RetryAsyncTest) {
   int32_t retries = 0;
   auto cb = [&retries](RpcContext* context) {
     ++retries;
@@ -178,7 +251,7 @@ TEST_F(RpcTest, RetryAsyncTest) {
   ASSERT_EQ(RPC_DEFAULT_MAX_ATTEMPTS, retries);
 }
 
-TEST_F(RpcTest, AsyncCallbackAlwaysCalled) {
+TEST_P(RpcParamTest, AsyncCallbackAlwaysCalled) {
   unique_ptr<ServiceIf> impl(
       new PingServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
   ASSERT_OK(rpc_mgr_.RegisterService(10, 1024, move(impl)));
@@ -199,6 +272,24 @@ TEST_F(RpcTest, AsyncCallbackAlwaysCalled) {
   rpc.ExecuteAsync(&PingServiceProxy::PingAsync, &request, &response, completion);
   done_signal.Get();
   ASSERT_FALSE(out_status.ok());
+}
+
+TEST_P(RpcParamTest, ThriftWrapperTest) {
+  int32_t port = 100;
+  TNetworkAddress addr = MakeNetworkAddress("localhost", port);
+
+  unique_ptr<ServiceIf> impl(
+      new PingServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
+  ASSERT_OK(rpc_mgr_.RegisterService(1, 1, move(impl)));
+  rpc_mgr_.StartServices(SERVICE_PORT, 2);
+
+  auto rpc = Rpc<PingServiceProxy>::Make(
+      localhost_, &rpc_mgr_);
+
+  Status status = rpc.ExecuteWithThriftArgs(&PingServiceProxy::PingThrift, &addr, &addr);
+  LOG (INFO) << "Fail reason: " << status.GetDetail();
+  ASSERT_TRUE(status.ok());
+  ASSERT_EQ(addr.port, port + 1);
 }
 
 TEST_F(RpcTest, TimeoutTest) {
@@ -293,23 +384,6 @@ TEST_F(RpcTest, FullServiceQueueTest) {
   barrier.Wait();
 
   ASSERT_EQ(num_rpcs_processed.Load(), NUM_RPCS) << "More successful RPCs than expected";
-}
-
-TEST_F(RpcTest, ThriftWrapperTest) {
-  int32_t port = 100;
-  TNetworkAddress addr = MakeNetworkAddress("localhost", port);
-
-  unique_ptr<ServiceIf> impl(
-      new PingServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
-  ASSERT_OK(rpc_mgr_.RegisterService(1, 1, move(impl)));
-  rpc_mgr_.StartServices(SERVICE_PORT, 2);
-
-  auto rpc = Rpc<PingServiceProxy>::Make(
-      localhost_, &rpc_mgr_);
-
-  Status status = rpc.ExecuteWithThriftArgs(&PingServiceProxy::PingThrift, &addr, &addr);
-  ASSERT_TRUE(status.ok());
-  ASSERT_EQ(addr.port, port + 1);
 }
 
 TEST_F(RpcTest, VeryLargePayloadTest) {

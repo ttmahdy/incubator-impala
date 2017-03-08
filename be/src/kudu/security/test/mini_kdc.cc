@@ -37,7 +37,7 @@
 #include "kudu/util/path_util.h"
 #include "kudu/util/stopwatch.h"
 #include "kudu/util/subprocess.h"
-#include "kudu/util/test_util.h"
+//#include "kudu/util/test_util.h"
 
 using std::map;
 using std::string;
@@ -60,7 +60,10 @@ MiniKdc::MiniKdc(const MiniKdcOptions& options)
     options_.realm = "KRBTEST.COM";
   }
   if (options_.data_root.empty()) {
-    options_.data_root = JoinPathSegments(GetTestDataDirectory(), "krb5kdc");
+    // Avoiding use of GetTestDataDirectory() which causes a clash between Impala's utils
+    // Kudu's utils.
+    //options_.data_root = JoinPathSegments(GetTestDataDirectory(), "krb5kdc");
+    options_.data_root = JoinPathSegments("/tmp", "krb5kdc");
   }
   if (options_.renew_lifetime.empty()) {
     options_.renew_lifetime = "7d";
@@ -80,7 +83,7 @@ map<string, string> MiniKdc::GetEnvVars() const {
   return {
     {"KRB5_CONFIG", JoinPathSegments(options_.data_root, "krb5.conf")},
     {"KRB5_KDC_PROFILE", JoinPathSegments(options_.data_root, "kdc.conf")},
-    {"KRB5CCNAME", JoinPathSegments(options_.data_root, "krb5cc")}
+    //{"KRB5CCNAME", JoinPathSegments(options_.data_root, "krb5cc")}
   };
 }
 

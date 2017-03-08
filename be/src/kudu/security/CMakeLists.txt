@@ -84,6 +84,17 @@ ADD_EXPORTABLE_LIBRARY(security
   SRCS ${SECURITY_SRCS}
   DEPS ${SECURITY_LIBS})
 
+# Copied this out of the 'security-test' section below to build and link the
+# mini_kdc for use by Impala.
+set(SECURITY_TEST_SRCS
+  test/mini_kdc.cc)
+
+add_library(security-test ${SECURITY_TEST_SRCS})
+target_link_libraries(security-test
+  gutil
+  kudu_util
+  security)
+
 
 ##############################
 # security-test

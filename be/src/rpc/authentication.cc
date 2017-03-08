@@ -38,6 +38,7 @@
 
 #include "exec/kudu-util.h"
 #include "kudu/rpc/sasl_common.h"
+#include "kudu/security/openssl_util.h"
 #include "rpc/auth-provider.h"
 #include "rpc/authentication-export.h"
 #include "rpc/thrift-server.h"
@@ -686,6 +687,8 @@ Status InitAuth(const string& appname) {
     KUDU_RETURN_IF_ERROR(kudu::client::DisableOpenSSLInitialization(),
         "Unable to disable Kudu SSL initialization.");
   }
+  KUDU_RETURN_IF_ERROR(kudu::security::DisableOpenSSLInitialization(),
+      "Unable to disable Kudu SSL initialization.");
   return Status::OK();
 }
 

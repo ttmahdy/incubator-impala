@@ -59,4 +59,12 @@ ADD_BE_TEST(authentication-test)
 ADD_BE_TEST(rpc-mgr-test)
 ADD_DEPENDENCIES(rpc-mgr-test rpc_test-proto-deps)
 add_library(rpc_test-proto ${RPC_TEST_SVC_PROTO_SRCS})
-target_link_libraries(rpc-mgr-test rpc_test-proto)
+target_link_libraries(rpc-mgr-test
+  rpc_test-proto
+  security-test
+  libev
+  glog
+  gflags
+  histogram_proto
+  pb_util_proto
+  protobuf)
