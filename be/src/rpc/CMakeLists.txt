@@ -42,7 +42,8 @@ add_library(Rpc
   thrift-thread.cc
   )
 
-add_dependencies(Rpc generated-deps)
+add_dependencies(Rpc security generated-deps)
+target_link_libraries(Rpc krb5)
 
 KRPC_GENERATE(RPC_TEST_SVC_PROTO_SRCS RPC_TEST_SVC_PROTO_HDRS
   RPC_TEST_SVC_PROTO_TGTS

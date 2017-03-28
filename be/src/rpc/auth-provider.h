@@ -139,17 +139,6 @@ class SaslAuthProvider : public AuthProvider {
   /// function as a client.
   bool needs_kinit_;
 
-  /// Runs "RunKinit" below if needs_kinit_ is true.
-  boost::scoped_ptr<Thread> kinit_thread_;
-
-  /// Periodically (roughly once every FLAGS_kerberos_reinit_interval minutes) calls kinit
-  /// to get a ticket granting ticket from the kerberos server for principal_, which is
-  /// kept in the kerberos cache associated with this process. This ensures that we have
-  /// valid kerberos credentials when operating as a client. Once the first attempt to
-  /// obtain a ticket has completed, first_kinit is Set() with the status of the operation.
-  /// Additionally, if the first attempt fails, this method will return.
-  void RunKinit(Promise<Status>* first_kinit);
-
   /// One-time kerberos-specific environment variable setup.  Called by InitKerberos().
   Status InitKerberosEnv();
 };

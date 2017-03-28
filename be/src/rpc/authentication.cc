@@ -39,6 +39,7 @@
 #include "exec/kudu-util.h"
 #include "kudu/rpc/sasl_common.h"
 #include "kudu/security/openssl_util.h"
+#include "kudu/security/init.h"
 #include "rpc/auth-provider.h"
 #include "rpc/authentication-export.h"
 #include "rpc/thrift-server.h"
@@ -73,8 +74,9 @@ DECLARE_string(be_principal);
 DECLARE_string(krb5_conf);
 DECLARE_string(krb5_debug_file);
 
-DEFINE_int32(kerberos_reinit_interval, 60,
-    "Interval, in minutes, between kerberos ticket renewals.");
+// TODO: Remove this flag in a compatibility-breaking release.
+DEFINE_int32(kerberos_reinit_interval, 60, "Deprecated");
+
 DEFINE_string(sasl_path, "", "Colon separated list of paths to look for SASL "
     "security library plugins.");
 DEFINE_bool(enable_ldap_auth, false,
@@ -497,51 +499,6 @@ static int SaslGetPath(void* context, const char** path) {
   return SASL_OK;
 }
 
-// When operating as a Kerberos client (internal connections only), we need to
-// 'kinit' as the principal.  A thread is created and calls this function for
-// that purpose, and to periodically renew the ticket as well.
-//
-// first_kinit: Used to communicate success/failure of the initial kinit call to
-//              the parent thread
-// Return: Only if the first call to 'kinit' fails
-void SaslAuthProvider::RunKinit(Promise<Status>* first_kinit) {
-
-  // Pass the path to the key file and the principal.
-  const string kinit_cmd = Substitute("kinit -k -t $0 $1 2>&1",
-      keytab_file_, principal_);
-
-  bool first_time = true;
-  std::random_device rd;
-  mt19937 generator(rd());
-  uniform_int<> dist(0, 300);
-
-  while (true) {
-    LOG(INFO) << "Registering " << principal_ << ", keytab file " << keytab_file_;
-    string kinit_output;
-    bool success = RunShellProcess(kinit_cmd, &kinit_output);
-
-    if (!success) {
-      const string& err_msg = Substitute(
-          "Failed to obtain Kerberos ticket for principal: $0. $1", principal_,
-          kinit_output);
-      if (first_time) {
-        first_kinit->Set(Status(err_msg));
-        return;
-      } else {
-        LOG(ERROR) << err_msg;
-      }
-    } else if (first_time) {
-      first_time = false;
-      first_kinit->Set(Status::OK());
-    }
-
-    // Sleep for the renewal interval, minus a random time between 0-5 minutes to help
-    // avoid a storm at the KDC. Additionally, never sleep less than a minute to
-    // reduce KDC stress due to frequent renewals.
-    SleepForMs(1000 * max((60 * FLAGS_kerberos_reinit_interval) - dist(generator), 60));
-  }
-}
-
 namespace {
 
 // SASL requires mutexes for thread safety, but doesn't implement
@@ -858,13 +815,7 @@ Status SaslAuthProvider::Start() {
   if (needs_kinit_) {
     DCHECK(is_internal_);
     DCHECK(!principal_.empty());
-    Promise<Status> first_kinit;
-    stringstream thread_name;
-    thread_name << "kinit-" << principal_;
-    kinit_thread_.reset(new Thread("authentication", thread_name.str(),
-        &SaslAuthProvider::RunKinit, this, &first_kinit));
-    LOG(INFO) << "Waiting for Kerberos ticket for principal: " << principal_;
-    RETURN_IF_ERROR(first_kinit.Get());
+    KUDU_RETURN_IF_ERROR(kudu::security::InitKerberosForServer(), "Could not init kerberos");
     LOG(INFO) << "Kerberos ticket granted to " << principal_;
   }
 
