@@ -326,6 +326,8 @@ error_codes = (
 
   ("IR_VERIFY_FAILED", 105,
    "Failed to verify generated IR function $0, see log for more details."),
+
+  ("DATASTREAM_RECVR_ALREADY_GONE", 106, "Datastream receiver already torn down"),
 )
 
 import sys

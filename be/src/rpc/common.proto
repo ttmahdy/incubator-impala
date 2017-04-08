@@ -29,5 +29,17 @@ package impala;
 // Common wrapper struct for Thrift data structures serialized to Protobuf.
 message ThriftWrapperPb {
   // Index of the sidecar which contains the Thrift-serialized payload. Almost always 0.
-  required int32 sidecar_idx = 1;
+  optional int32 sidecar_idx = 1;
+}
+
+// Proto-serialized version of Impala's Status object.
+message StatusPb {
+  optional int32 status_code = 1;
+  repeated string error_msgs = 2;
+}
+
+// 128-bit ID (equivalent to TUniqueID).
+message UniqueIdPb {
+  optional int64 hi = 1;
+  optional int64 lo = 2;
 }

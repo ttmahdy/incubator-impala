@@ -48,12 +48,13 @@ typedef std::unordered_map<TNetworkAddress, PerNodeScanRanges>
 /// execution parameters for a single fragment instance; used to assemble the
 /// TPlanFragmentInstanceCtx
 struct FInstanceExecParams {
-  TUniqueId instance_id;
-  TNetworkAddress host; // execution backend
+  const TUniqueId instance_id;
+  const TNetworkAddress host; // execution backend
+  const TNetworkAddress data_svc;
   PerNodeScanRanges per_node_scan_ranges;
 
   /// 0-based ordinal of this particular instance within its fragment (not: query-wide)
-  int per_fragment_instance_idx;
+  const int per_fragment_instance_idx;
 
   /// In its role as a data sender, a fragment instance is assigned a "sender id" to
   /// uniquely identify it to a receiver. -1 = invalid.
@@ -63,9 +64,10 @@ struct FInstanceExecParams {
   const FragmentExecParams& fragment_exec_params;
   const TPlanFragment& fragment() const;
 
-  FInstanceExecParams(const TUniqueId& instance_id, const TNetworkAddress& host,
-      int per_fragment_instance_idx, const FragmentExecParams& fragment_exec_params)
-    : instance_id(instance_id), host(host),
+  explicit FInstanceExecParams(const TUniqueId& instance_id, const TNetworkAddress& host,
+      const TNetworkAddress& data_svc, int per_fragment_instance_idx,
+      const FragmentExecParams& fragment_exec_params)
+      : instance_id(instance_id), host(host), data_svc(data_svc),
       per_fragment_instance_idx(per_fragment_instance_idx),
       sender_id(-1),
       fragment_exec_params(fragment_exec_params) {}

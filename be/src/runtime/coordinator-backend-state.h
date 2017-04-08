@@ -79,11 +79,12 @@ class Coordinator::BackendState {
   void UpdateExecStats(const std::vector<FragmentStats*>& fragment_stats);
 
   /// Make a PublishFilter rpc with given params if this backend has instances of the
-  /// fragment with idx == rpc_params->dst_fragment_idx, otherwise do nothing.
+  /// fragment with idx == dst_fragment_idx, otherwise do nothing.
   /// This takes by-value parameters because we cannot guarantee that the originating
   /// coordinator won't be destroyed while this executes.
   /// TODO: switch to references when we fix the lifecycle problems of coordinators.
-  void PublishFilter(std::shared_ptr<TPublishFilterParams> rpc_params);
+  void PublishFilter(int32_t dst_fragment_idx, int32_t filter_id,
+      const std::shared_ptr<ProtoBloomFilter>& proto_filter);
 
   /// Cancel execution at this backend if anything is running. Returns true
   /// if cancellation was attempted, false otherwise.
@@ -100,6 +101,7 @@ class Coordinator::BackendState {
   void MergeErrorLog(ErrorLogMap* merged);
 
   const TNetworkAddress& impalad_address() const { return host_; }
+  const int data_svc_port() const { return data_svc_port_; }
   int state_idx() const { return state_idx_; }
 
   /// only valid after Exec()
@@ -177,7 +179,11 @@ class Coordinator::BackendState {
   /// indices of fragments executing on this backend, populated in Init()
   std::unordered_set<int> fragments_;
 
+  /// Fully resolved address of ImpalaInternalService on this backend.
   TNetworkAddress host_;
+
+  /// Port for datastream service.
+  int32_t data_svc_port_;
 
   /// protects fields below
   /// lock ordering: Coordinator::lock_ must only be obtained *prior* to lock_

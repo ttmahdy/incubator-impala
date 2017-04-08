@@ -25,15 +25,18 @@
 
 namespace impala {
 
-/// Test that BackendConfig can be created from a vector of backends.
-TEST(BackendConfigTest, MakeFromBackendVector) {
-  // This address needs to be resolvable using getaddrinfo().
-  vector<TNetworkAddress> backends {MakeNetworkAddress("localhost", 1001)};
-  BackendConfig backend_config(backends);
-  IpAddr backend_ip;
-  bool ret = backend_config.LookUpBackendIp(backends[0].hostname, &backend_ip);
-  ASSERT_TRUE(ret);
-  EXPECT_EQ("127.0.0.1", backend_ip);
+namespace {
+
+TBackendDescriptor MakeBackendDescriptor(const string& hostname, const string& ip,
+    int port) {
+  TBackendDescriptor be_desc;
+  be_desc.address = MakeNetworkAddress(hostname, port);
+  be_desc.ip_address = ip;
+  be_desc.is_coordinator = true;
+  be_desc.is_executor = true;
+  return be_desc;
+}
+
 }
 
 /// Test adding multiple backends on different hosts.

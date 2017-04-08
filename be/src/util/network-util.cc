@@ -28,6 +28,7 @@
 #include <vector>
 #include <boost/algorithm/string.hpp>
 
+#include "kudu/util/net/sockaddr.h"
 #include "util/debug-util.h"
 #include "util/error-util.h"
 #include <util/string-parser.h>
@@ -60,6 +61,11 @@ Status GetHostname(string* hostname) {
   }
   *hostname = string(name);
   return Status::OK();
+}
+
+bool IsResolvedAddress(const TNetworkAddress& addr) {
+  kudu::Sockaddr sock;
+  return sock.ParseString(addr.hostname, addr.port).ok();
 }
 
 Status HostnameToIpAddr(const Hostname& hostname, IpAddr* ip){
@@ -150,15 +156,10 @@ TNetworkAddress MakeNetworkAddress(const string& address) {
   return ret;
 }
 
-/// Utility method because Thrift does not supply useful constructors
-TBackendDescriptor MakeBackendDescriptor(const Hostname& hostname, const IpAddr& ip,
-    int port) {
-  TBackendDescriptor be_desc;
-  be_desc.address = MakeNetworkAddress(hostname, port);
-  be_desc.ip_address = ip;
-  be_desc.is_coordinator = true;
-  be_desc.is_executor = true;
-  return be_desc;
+Status ResolveAddr(const TNetworkAddress& addr, TNetworkAddress* output) {
+  RETURN_IF_ERROR(HostnameToIpAddr(addr.hostname, &output->hostname));
+  output->port = addr.port;
+  return Status::OK();
 }
 
 bool IsWildcardAddress(const string& ipaddress) {

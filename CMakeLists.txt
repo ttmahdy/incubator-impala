@@ -379,7 +379,7 @@ message(STATUS "Kerberos include dir: " ${KERBEROS_INCLUDE_DIR})
 find_package(KRPC REQUIRED)
 
 # KuduClient can use GLOG
-add_definitions(-DKUDU_HEADERS_USE_GLOG)
+add_definitions(-DKUDU_HEADERS_USE_GLOG -DKUDU_HEADERS_USE_RICH_SLICE)
 if(NOT $ENV{KUDU_CLIENT_DIR} EQUAL "")
   set(kuduClient_DIR "$ENV{KUDU_CLIENT_DIR}/usr/local/share/kuduClient/cmake")
 else()
@@ -429,7 +429,7 @@ add_custom_target(cscope ALL
 )
 
 if (DEFINED ENV{IMPALA_LZO} AND EXISTS $ENV{IMPALA_LZO})
-  add_custom_target(impala-lzo ALL DEPENDS thrift-deps
+  add_custom_target(impala-lzo ALL DEPENDS generated-deps
     COMMAND $ENV{IMPALA_LZO}/build.sh ${CMAKE_BUILD_TYPE} ${CMAKE_SOURCE_DIR}
     $ENV{IMPALA_TOOLCHAIN}
   )

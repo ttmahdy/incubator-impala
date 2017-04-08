@@ -28,26 +28,34 @@
 #include "exec/exec-node.h"
 #include "exec/scan-node.h"
 #include "scheduling/query-schedule.h"
+#include "rpc/rpc.h"
+#include "runtime/backend-client.h"
 #include "runtime/exec-env.h"
 #include "runtime/fragment-instance-state.h"
 #include "runtime/debug-options.h"
 #include "runtime/client-cache.h"
 #include "runtime/client-cache-types.h"
-#include "runtime/backend-client.h"
 #include "runtime/coordinator-filter-state.h"
+#include "service/data_stream_service.proxy.h"
+#include "util/bloom-filter.h"
 #include "util/error-util.h"
 #include "util/uid-util.h"
 #include "util/network-util.h"
 #include "util/counting-barrier.h"
 #include "util/progress-updater.h"
 #include "gen-cpp/Types_types.h"
-#include "gen-cpp/ImpalaInternalService_types.h"
+#include "gen-cpp/ImpalaInternalService.h"
 #include "gen-cpp/ImpalaInternalService_constants.h"
 
 #include "common/names.h"
 
 using namespace impala;
 namespace accumulators = boost::accumulators;
+
+using kudu::MonoDelta;
+using kudu::rpc::RpcController;
+
+DECLARE_int32(rpc_publish_filter_timeout_ms);
 
 Coordinator::BackendState::BackendState(
     const TUniqueId& query_id, int state_idx, TRuntimeFilterMode::type filter_mode)
@@ -64,6 +72,7 @@ void Coordinator::BackendState::Init(
     const vector<FragmentStats*>& fragment_stats, ObjectPool* obj_pool) {
   instance_params_list_ = instance_params_list;
   host_ = instance_params_list_[0]->host;
+  data_svc_port_ = instance_params_list[0]->data_svc.port;
   num_remaining_instances_ = instance_params_list.size();
 
   // populate instance_stats_map_ and install instance
@@ -370,23 +379,44 @@ bool Coordinator::BackendState::Cancel() {
   return true;
 }
 
-void Coordinator::BackendState::PublishFilter(
-    shared_ptr<TPublishFilterParams> rpc_params) {
-  DCHECK_EQ(rpc_params->dst_query_id, query_id_);
-  if (fragments_.count(rpc_params->dst_fragment_idx) == 0) return;
-  Status status;
-  ImpalaBackendConnection backend_client(
-      ExecEnv::GetInstance()->impalad_client_cache(), host_, &status);
-  if (!status.ok()) return;
-  // Make a local copy of the shared 'master' set of parameters
-  TPublishFilterParams local_params(*rpc_params);
-  local_params.__set_bloom_filter(rpc_params->bloom_filter);
-  TPublishFilterResult res;
-  backend_client.DoRpc(&ImpalaBackendClient::PublishFilter, local_params, &res);
-  // TODO: switch back to the following once we fix the lifecycle
-  // problems of Coordinator
-  //std::cref(fragment_inst->impalad_address()),
-  //std::cref(fragment_inst->fragment_instance_id())));
+void Coordinator::BackendState::PublishFilter(int32_t dst_fragment_idx,
+    int32_t filter_id, const shared_ptr<ProtoBloomFilter>& proto_filter) {
+  if (fragments_.count(dst_fragment_idx) == 0) return;
+
+  TNetworkAddress address = MakeNetworkAddress(impalad_address().hostname,
+      data_svc_port());
+
+  auto rpc =
+      Rpc<DataStreamServiceProxy>::Make(address, ExecEnv::GetInstance()->rpc_mgr());
+  rpc.SetTimeout(MonoDelta::FromMilliseconds(FLAGS_rpc_publish_filter_timeout_ms));
+
+  unique_ptr<PublishFilterRequestPb> request = make_unique<PublishFilterRequestPb>();
+  request->set_fragment_idx(dst_fragment_idx);
+  request->mutable_query_id()->set_lo(query_id_.lo);
+  request->mutable_query_id()->set_hi(query_id_.hi);
+  request->set_filter_id(filter_id);
+
+  if (proto_filter.get() != nullptr) {
+    (*request->mutable_bloom_filter()) = proto_filter->header;
+    int sidecar_idx;
+    rpc.AddSidecar(proto_filter->directory_data, &sidecar_idx);
+    request->mutable_bloom_filter()->set_directory_sidecar_idx(sidecar_idx);
+  } else {
+    request->mutable_bloom_filter()->set_always_true(true);
+    request->mutable_bloom_filter()->set_log_heap_space(0);
+    request->mutable_bloom_filter()->set_directory_sidecar_idx(-1);
+  }
+
+  // Copying proto_filter here ensures that its lifetime will last at least until this
+  // callback completes.
+  auto cb = [proto_filter] (const Status& status, PublishFilterRequestPb* request,
+      PublishFilterResponsePb* response, RpcController* controller) {
+    delete request;
+    delete response;
+  };
+  unique_ptr<PublishFilterResponsePb> response = make_unique<PublishFilterResponsePb>();
+  rpc.ExecuteAsync(&DataStreamServiceProxy::PublishFilterAsync, request.release(),
+      response.release(), cb);
 }
 
 Coordinator::BackendState::InstanceStats::InstanceStats(

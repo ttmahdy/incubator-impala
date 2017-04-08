@@ -27,6 +27,7 @@
 #include "gen-cpp/ImpalaInternalService_types.h"
 #include "gen-cpp/Types_types.h"
 #include "runtime/tmp-file-mgr.h"
+#include "util/bloom-filter.h"
 #include "util/spinlock.h"
 #include "util/uid-util.h"
 #include "util/promise.h"
@@ -35,6 +36,7 @@ namespace impala {
 
 class FragmentInstanceState;
 class MemTracker;
+class ProtoBloomFilter;
 class ReservationTracker;
 
 /// Central class for all backend execution state (example: the FragmentInstanceStates
@@ -138,7 +140,7 @@ class QueryState {
 
   /// Blocks until all fragment instances have finished their Prepare phase.
   void PublishFilter(int32_t filter_id, int fragment_idx,
-      const TBloomFilter& thrift_bloom_filter);
+      const ProtoBloomFilter& proto_bloom_filter);
 
   /// Cancels all actively executing fragment instances. Blocks until all fragment
   /// instances have finished their Prepare phase. Idempotent.

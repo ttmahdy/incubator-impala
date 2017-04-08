@@ -21,6 +21,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "service/data_stream_service.pb.h"
 #include "testutil/gtest-util.h"
 
 using namespace std;
@@ -63,21 +64,21 @@ bool BfFind(BloomFilter& bf, uint32_t h) {
 // Computes union of 'x' and 'y'. Computes twice with AVX enabled and disabled and
 // verifies both produce the same result. 'success' is set to true if both union
 // computations returned the same result and set to false otherwise.
-TBloomFilter BfUnion(const BloomFilter& x, const BloomFilter& y, bool* success) {
-  TBloomFilter thrift_x, thrift_y;
-  BloomFilter::ToThrift(&x, &thrift_x);
-  BloomFilter::ToThrift(&y, &thrift_y);
-  BloomFilter::Or(thrift_x, &thrift_y);
+ProtoBloomFilter BfUnion(const BloomFilter& x, const BloomFilter& y, bool* success) {
+  ProtoBloomFilter proto_x, proto_y;
+  BloomFilter::ToProto(&x, &proto_x);
+  BloomFilter::ToProto(&y, &proto_y);
+  BloomFilter::Or(proto_x, &proto_y);
   {
     CpuInfo::TempDisable t1(CpuInfo::AVX);
     CpuInfo::TempDisable t2(CpuInfo::AVX2);
-    TBloomFilter thrift_x2, thrift_y2;
-    BloomFilter::ToThrift(&x, &thrift_x2);
-    BloomFilter::ToThrift(&y, &thrift_y2);
-    BloomFilter::Or(thrift_x2, &thrift_y2);
-    *success = thrift_y.directory == thrift_y2.directory;
+    ProtoBloomFilter proto_x2, proto_y2;
+    BloomFilter::ToProto(&x, &proto_x2);
+    BloomFilter::ToProto(&y, &proto_y2);
+    BloomFilter::Or(proto_x2, &proto_y2);
+    *success = (proto_y.directory.compare(proto_y2.directory) == 0);
   }
-  return thrift_y;
+  return proto_y;
 }
 
 }  // namespace
@@ -245,7 +246,7 @@ TEST(BloomFilter, MinSpaceForFpp) {
   }
 }
 
-TEST(BloomFilter, Thrift) {
+TEST(BloomFilter, Proto) {
   BloomFilter bf(BloomFilter::MinLogSpace(100, 0.01));
   for (int i = 0; i < 10; ++i) BfInsert(bf, i);
   // Check no unexpected new false positives.
@@ -254,19 +255,19 @@ TEST(BloomFilter, Thrift) {
     if (!BfFind(bf, i)) missing_ints.insert(i);
   }
 
-  TBloomFilter to_thrift;
-  BloomFilter::ToThrift(&bf, &to_thrift);
-  EXPECT_EQ(to_thrift.always_true, false);
+  ProtoBloomFilter to_proto;
+  BloomFilter::ToProto(&bf, &to_proto);
+  EXPECT_EQ(to_proto.header.always_true(), false);
 
-  BloomFilter from_thrift(to_thrift);
-  for (int i = 0; i < 10; ++i) ASSERT_TRUE(BfFind(from_thrift, i));
-  for (int missing: missing_ints) ASSERT_FALSE(BfFind(from_thrift, missing));
+  BloomFilter from_proto(to_proto);
+  for (int i = 0; i < 10; ++i) ASSERT_TRUE(BfFind(from_proto, i));
+  for (int missing: missing_ints) ASSERT_FALSE(BfFind(from_proto, missing));
 
-  BloomFilter::ToThrift(NULL, &to_thrift);
-  EXPECT_EQ(to_thrift.always_true, true);
+  BloomFilter::ToProto(NULL, &to_proto);
+  EXPECT_EQ(to_proto.header.always_true(), true);
 }
 
-TEST(BloomFilter, ThriftOr) {
+TEST(BloomFilter, ProtoOr) {
   BloomFilter bf1(BloomFilter::MinLogSpace(100, 0.01));
   BloomFilter bf2(BloomFilter::MinLogSpace(100, 0.01));
 
@@ -282,7 +283,7 @@ TEST(BloomFilter, ThriftOr) {
   // Insert another value to aggregated BloomFilter.
   for (int i = 11; i < 50; ++i) BfInsert(bf3, i);
 
-  // Apply TBloomFilter back to BloomFilter and verify if aggregation was correct.
+  // Apply ProtoBloomFilter back to BloomFilter and verify if aggregation was correct.
   BloomFilter bf4(BfUnion(bf1, bf3, &success));
   ASSERT_TRUE(success) << "SIMD BloomFilter::Union error";
   for (int i = 11; i < 50; ++i) ASSERT_TRUE(BfFind(bf4, i)) << i;

@@ -178,7 +178,9 @@ Status StatestoreSubscriber::Register() {
   request.subscriber_id = subscriber_id_;
 
   TRegisterSubscriberResponse response;
-  auto rpc = Rpc<StatestoreServiceProxy>::Make(statestore_address_, rpc_mgr_);
+  TNetworkAddress resolved_addr;
+  RETURN_IF_ERROR(ResolveAddr(statestore_address_, &resolved_addr));
+  auto rpc = Rpc<StatestoreServiceProxy>::Make(resolved_addr, rpc_mgr_);
   RETURN_IF_ERROR(rpc.ExecuteWithThriftArgs(
       &StatestoreServiceProxy::RegisterSubscriber, &request, &response));
 

@@ -34,9 +34,6 @@ class BackendConfig {
  public:
   BackendConfig() {}
 
-  /// Construct from list of backends.
-  BackendConfig(const std::vector<TNetworkAddress>& backends);
-
   /// List of Backends.
   typedef std::list<TBackendDescriptor> BackendList;
 
@@ -58,6 +55,10 @@ class BackendConfig {
   bool LookUpBackendIp(const Hostname& hostname, IpAddr* ip) const;
 
   int NumBackends() const { return backend_map_.size(); }
+
+  /// Look up the descriptor with 'addr' as its control-service address. It's required
+  /// that a match must exist, otherwise a DCHECK will fail in debug builds.
+  const TBackendDescriptor& LookUpBackendDescriptor(const TNetworkAddress& addr) const;
 
  private:
   /// Map from a host's IP address to a list of backends running on that node.

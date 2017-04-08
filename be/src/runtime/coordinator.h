@@ -57,7 +57,6 @@ class ExecEnv;
 class TUpdateCatalogRequest;
 class TQueryExecRequest;
 class TReportExecStatusParams;
-class TRowBatch;
 class TPlanExecRequest;
 class TRuntimeProfileTree;
 class RuntimeProfile;
@@ -68,6 +67,7 @@ class MemTracker;
 class PlanRootSink;
 class FragmentInstanceState;
 class QueryState;
+class ProtoBloomFilter;
 
 
 /// Query coordinator: handles execution of fragment instances on remote nodes, given a
@@ -195,7 +195,7 @@ class Coordinator { // NOLINT: The member variables could be re-ordered to save 
   /// with others for the same filter ID into a global filter. If all updates for that
   /// filter ID have been received (may be 1 or more per filter), broadcast the global
   /// filter to fragment instances.
-  void UpdateFilter(const TUpdateFilterParams& params);
+  void UpdateFilter(int32_t filter_id, const ProtoBloomFilter& request);
 
  private:
   class BackendState;

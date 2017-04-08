@@ -22,46 +22,64 @@
 #include <boost/thread/locks.hpp>
 #include <boost/thread/thread.hpp>
 
-#include "runtime/row-batch.h"
 #include "runtime/data-stream-recvr.h"
 #include "runtime/raw-value.inline.h"
+#include "runtime/row-batch.h"
 #include "runtime/runtime-state.h"
+#include "service/data_stream_service.pb.h"
 #include "util/debug-util.h"
 #include "util/periodic-counter-updater.h"
 #include "util/runtime-profile-counters.h"
 #include "util/uid-util.h"
 
-#include "gen-cpp/ImpalaInternalService.h"
-#include "gen-cpp/ImpalaInternalService_types.h"
+#include "kudu/rpc/rpc_context.h"
 
 #include "common/names.h"
 
-using namespace apache::thrift;
 using std::boolalpha;
+using kudu::rpc::ErrorStatusPB;
+using kudu::rpc::RpcContext;
 
 DEFINE_int32(datastream_sender_timeout_ms, 120000, "(Advanced) The time, in ms, that can "
-    "elapse  before a plan fragment will time-out trying to send the initial row batch.");
+    "elapse before a plan fragment will time-out trying to send a row batch.");
 
 /// This parameter controls the minimum amount of time a closed stream ID will stay in
 /// closed_stream_cache_ before it is evicted. It needs to be set sufficiently high that
-/// it will outlive all the calls to FindRecvrOrWait() for that stream ID, to distinguish
+/// it will outlive all the calls to FindRecvr() for that stream ID, to distinguish
 /// between was-here-but-now-gone and never-here states for the receiver. If the stream ID
-/// expires before a call to FindRecvrOrWait(), the sender will see an error which will
-/// lead to query cancellation. Setting this value higher will increase the size of the
-/// stream cache (which is roughly 48 bytes per receiver).
+/// expires before a call to FindRecvr(), the sender will see an error which will lead to
+/// query cancellation. Setting this value higher will increase the size of the stream
+/// cache (which is roughly 48 bytes per receiver).
 /// TODO: We don't need millisecond precision here.
 const int32_t STREAM_EXPIRATION_TIME_MS = 300 * 1000;
 
 namespace impala {
 
-DataStreamMgr::DataStreamMgr(MetricGroup* metrics) {
-  metrics_ = metrics->GetOrCreateChildGroup("datastream-manager");
+DataStreamMgr::DataStreamMgr(MetricGroup* metrics)
+    : deserialize_pool_("data-stream-mgr", "sender-response", 4, 10000,
+        [this](int thread_id, DeserializeWorkItem&& workitem) {
+          bool unused = false;
+          shared_ptr<DataStreamRecvr> recvr = this->FindRecvr(
+              workitem.fragment_instance_id, workitem.ctx->request->dest_node_id(), &unused);
+          if (recvr) {
+            recvr->AddBatch(move(workitem.ctx));
+          } else {
+            workitem.ctx->context->RespondSuccess();
+          }
+        }) {
+  MetricGroup* dsm_metrics = metrics->GetOrCreateChildGroup("datastream-manager");
   num_senders_waiting_ =
-      metrics_->AddGauge<int64_t>("senders-blocked-on-recvr-creation", 0L);
+      dsm_metrics->AddGauge<int64_t>("senders-blocked-on-recvr-creation", 0L);
   total_senders_waited_ =
-      metrics_->AddCounter<int64_t>("total-senders-blocked-on-recvr-creation", 0L);
-  num_senders_timedout_ = metrics_->AddCounter<int64_t>(
+      dsm_metrics->AddCounter<int64_t>("total-senders-blocked-on-recvr-creation", 0L);
+  num_senders_timedout_ = dsm_metrics->AddCounter<int64_t>(
       "total-senders-timedout-waiting-for-recvr-creation", 0L);
+  maintenance_thread_.reset(
+      new Thread("data-stream-mgr", "maintenance", [this](){ this->Maintenance(); }));
+}
+
+void DataStreamMgr::EnqueueRowBatch(DeserializeWorkItem&& payload) {
+  deserialize_pool_.Offer(move(payload));
 }
 
 inline uint32_t DataStreamMgr::GetHashValue(
@@ -76,7 +94,7 @@ shared_ptr<DataStreamRecvr> DataStreamMgr::CreateRecvr(RuntimeState* state,
     const RowDescriptor* row_desc, const TUniqueId& fragment_instance_id,
     PlanNodeId dest_node_id, int num_senders, int buffer_size, RuntimeProfile* profile,
     bool is_merging) {
-  DCHECK(profile != NULL);
+  DCHECK(profile != nullptr);
   VLOG_FILE << "creating receiver for fragment="
             << fragment_instance_id << ", node=" << dest_node_id;
   shared_ptr<DataStreamRecvr> recvr(
@@ -84,120 +102,112 @@ shared_ptr<DataStreamRecvr> DataStreamMgr::CreateRecvr(RuntimeState* state,
           fragment_instance_id, dest_node_id, num_senders, is_merging, buffer_size,
           profile));
   size_t hash_value = GetHashValue(fragment_instance_id, dest_node_id);
-  lock_guard<mutex> l(lock_);
-  fragment_recvr_set_.insert(make_pair(fragment_instance_id, dest_node_id));
-  receiver_map_.insert(make_pair(hash_value, recvr));
+  EarlySendersList waiters;
+  {
+    lock_guard<mutex> l(lock_);
+    fragment_recvr_set_.insert(make_pair(fragment_instance_id, dest_node_id));
+    receiver_map_.insert(make_pair(hash_value, recvr));
 
-  RendezvousMap::iterator it =
-      pending_rendezvous_.find(make_pair(fragment_instance_id, dest_node_id));
-  if (it != pending_rendezvous_.end()) it->second.promise->Set(recvr);
+    EarlySendersMap::iterator it =
+        early_senders_.find(make_pair(fragment_instance_id, dest_node_id));
+    if (it == early_senders_.end()) return recvr;
+
+    waiters = move(it->second);
+    early_senders_.erase(it);
+  }
+
+  for (unique_ptr<TransmitDataCtx>& ctx: waiters.waiting_senders) {
+    EnqueueRowBatch({recvr->fragment_instance_id(), move(ctx)});
+    num_senders_waiting_->Increment(-1);
+  }
+  for (int32_t sender_id: waiters.closing_senders) recvr->RemoveSender(sender_id);
 
   return recvr;
 }
 
-shared_ptr<DataStreamRecvr> DataStreamMgr::FindRecvrOrWait(
+shared_ptr<DataStreamRecvr> DataStreamMgr::FindRecvr(
     const TUniqueId& fragment_instance_id, PlanNodeId node_id,
     bool* already_unregistered) {
-  RendezvousPromise* promise = NULL;
-  RecvrId promise_key = make_pair(fragment_instance_id, node_id);
-  *already_unregistered = false;
-  {
-    lock_guard<mutex> l(lock_);
-    if (closed_stream_cache_.find(promise_key) != closed_stream_cache_.end()) {
-      *already_unregistered = true;
-      return shared_ptr<DataStreamRecvr>();
-    }
-    shared_ptr<DataStreamRecvr> rcvr = FindRecvr(fragment_instance_id, node_id, false);
-    if (rcvr.get() != NULL) return rcvr;
-    // Find the rendezvous, creating a new one if one does not already exist.
-    RefCountedPromise* ref_counted_promise = &pending_rendezvous_[promise_key];
-    promise = ref_counted_promise->promise;
-    ref_counted_promise->IncRefCount();
-  }
-  bool timed_out = false;
-  MonotonicStopWatch sw;
-  sw.Start();
-  num_senders_waiting_->Increment(1L);
-  total_senders_waited_->Increment(1L);
-  shared_ptr<DataStreamRecvr> rcvr =
-      promise->Get(FLAGS_datastream_sender_timeout_ms, &timed_out);
-  num_senders_waiting_->Increment(-1L);
-  const string& time_taken = PrettyPrinter::Print(sw.ElapsedTime(), TUnit::TIME_NS);
-  if (timed_out) {
-    LOG(INFO) << "Datastream sender timed-out waiting for recvr for fragment instance: "
-              << fragment_instance_id << " (time-out was: " << time_taken << "). "
-              << "Increase --datastream_sender_timeout_ms if you see this message "
-              << "frequently.";
-  } else {
-    VLOG_RPC << "Datastream sender waited for " << time_taken
-             << ", and did not time-out.";
-  }
-  if (timed_out) num_senders_timedout_->Increment(1L);
-  {
-    lock_guard<mutex> l(lock_);
-    // If we are the last to leave, remove the rendezvous from the pending map. Any new
-    // incoming senders will add a new entry to the map themselves.
-    if (pending_rendezvous_[promise_key].DecRefCount() == 0) {
-      pending_rendezvous_.erase(promise_key);
-    }
-  }
-  return rcvr;
-}
-
-shared_ptr<DataStreamRecvr> DataStreamMgr::FindRecvr(
-    const TUniqueId& fragment_instance_id, PlanNodeId node_id, bool acquire_lock) {
   VLOG_ROW << "looking up fragment_instance_id=" << fragment_instance_id
            << ", node=" << node_id;
+  *already_unregistered = false;
+  RecvrId recvr_id = make_pair(fragment_instance_id, node_id);
+  if (closed_stream_cache_.find(recvr_id) != closed_stream_cache_.end()) {
+    *already_unregistered = true;
+    return shared_ptr<DataStreamRecvr>();
+  }
+
   size_t hash_value = GetHashValue(fragment_instance_id, node_id);
-  if (acquire_lock) lock_.lock();
   pair<RecvrMap::iterator, RecvrMap::iterator> range =
       receiver_map_.equal_range(hash_value);
   while (range.first != range.second) {
     shared_ptr<DataStreamRecvr> recvr = range.first->second;
     if (recvr->fragment_instance_id() == fragment_instance_id
         && recvr->dest_node_id() == node_id) {
-      if (acquire_lock) lock_.unlock();
       return recvr;
     }
     ++range.first;
   }
-  if (acquire_lock) lock_.unlock();
   return shared_ptr<DataStreamRecvr>();
 }
 
-Status DataStreamMgr::AddData(const TUniqueId& fragment_instance_id,
-    PlanNodeId dest_node_id, const TRowBatch& thrift_batch, int sender_id) {
+void DataStreamMgr::AddData(const TUniqueId& fragment_instance_id,
+    unique_ptr<TransmitDataCtx>&& payload) {
   VLOG_ROW << "AddData(): fragment_instance_id=" << fragment_instance_id
-           << " node=" << dest_node_id
-           << " size=" << RowBatch::GetBatchSize(thrift_batch);
-  bool already_unregistered;
-  shared_ptr<DataStreamRecvr> recvr = FindRecvrOrWait(fragment_instance_id, dest_node_id,
-      &already_unregistered);
-  if (recvr.get() == NULL) {
+           << " node=" << payload->request->dest_node_id() << " size="
+           << payload->proto_batch.GetSize();
+  bool already_unregistered = false;
+  shared_ptr<DataStreamRecvr> recvr;
+  {
+    lock_guard<mutex> l(lock_);
+    recvr = FindRecvr(
+        fragment_instance_id, payload->request->dest_node_id(), &already_unregistered);
+    // If no receiver found, but not in the closed stream cache, best guess is that it is
+    // still preparing, so add payload to per-receiver list.
+    if (!already_unregistered && !recvr) {
+      num_senders_waiting_->Increment(1);
+      total_senders_waited_->Increment(1);
+      RecvrId recvr_id = make_pair(fragment_instance_id, payload->request->dest_node_id());
+      early_senders_[recvr_id].waiting_senders.emplace_back(move(payload));
+      return;
+    }
+  }
+  if (already_unregistered) {
     // The receiver may remove itself from the receiver map via DeregisterRecvr() at any
     // time without considering the remaining number of senders.  As a consequence,
-    // FindRecvrOrWait() may return NULL if a thread calling DeregisterRecvr() beat the
-    // thread calling FindRecvr() in acquiring lock_. We detect this case by checking
-    // already_unregistered - if true then the receiver was already closed deliberately,
-    // and there's no unexpected error here. If already_unregistered is false,
-    // FindRecvrOrWait() timed out, which is unexpected and suggests a query setup error;
-    // we return DATASTREAM_SENDER_TIMEOUT to trigger tear-down of the query.
-    return already_unregistered ? Status::OK() :
-        Status(TErrorCode::DATASTREAM_SENDER_TIMEOUT, PrintId(fragment_instance_id));
+    // FindRecvr() may return nullptr even though the receiver was once present. We
+    // detect this case by checking already_unregistered - if true then the receiver was
+    // already closed deliberately, and there's no unexpected error here.
+    Status(TErrorCode::DATASTREAM_RECVR_ALREADY_GONE).ToProto(
+        payload->response->mutable_status());
+    payload->context->RespondSuccess();
+    return;
   }
-  DCHECK(!already_unregistered);
-  recvr->AddBatch(thrift_batch, sender_id);
-  return Status::OK();
+
+  // Don't hold lock.
+  DCHECK(recvr.get() != nullptr);
+  recvr->AddBatch(move(payload));
 }
 
 Status DataStreamMgr::CloseSender(const TUniqueId& fragment_instance_id,
     PlanNodeId dest_node_id, int sender_id) {
   VLOG_FILE << "CloseSender(): fragment_instance_id=" << fragment_instance_id
             << ", node=" << dest_node_id;
-  bool unused;
-  shared_ptr<DataStreamRecvr> recvr = FindRecvrOrWait(fragment_instance_id, dest_node_id,
-      &unused);
-  if (recvr.get() != NULL) recvr->RemoveSender(sender_id);
+  shared_ptr<DataStreamRecvr> recvr;
+  {
+    lock_guard<mutex> l(lock_);
+    bool already_unregistered;
+    recvr = FindRecvr(fragment_instance_id, dest_node_id, &already_unregistered);
+    // If no receiver found, but not in the closed stream cache, still need to make sure
+    // that the close operation is performed so add to per-recvr list of pending closes.
+    if (!already_unregistered && !recvr) {
+      RecvrId recvr_id = make_pair(fragment_instance_id, dest_node_id);
+      early_senders_[recvr_id].closing_senders.emplace_back(sender_id);
+      return Status::OK();
+    }
+  }
+
+  if (recvr) recvr->RemoveSender(sender_id);
 
   {
     // Remove any closed streams that have been in the cache for more than
@@ -247,11 +257,11 @@ Status DataStreamMgr::DeregisterRecvr(
     ++range.first;
   }
 
-  stringstream err;
-  err << "unknown row receiver id: fragment_instance_id=" << fragment_instance_id
-      << " node_id=" << node_id;
-  LOG(ERROR) << err.str();
-  return Status(err.str());
+  const string msg = Substitute(
+      "Unknown row receiver id: fragment_instance_id=$0, node_id=$1",
+      PrintId(fragment_instance_id), node_id);
+  LOG(ERROR) << msg;
+  return Status(msg);
 }
 
 void DataStreamMgr::Cancel(const TUniqueId& fragment_instance_id) {
@@ -260,18 +270,67 @@ void DataStreamMgr::Cancel(const TUniqueId& fragment_instance_id) {
   FragmentRecvrSet::iterator i =
       fragment_recvr_set_.lower_bound(make_pair(fragment_instance_id, 0));
   while (i != fragment_recvr_set_.end() && i->first == fragment_instance_id) {
-    shared_ptr<DataStreamRecvr> recvr = FindRecvr(i->first, i->second, false);
-    if (recvr.get() == NULL) {
-      // keep going but at least log it
-      stringstream err;
-      err << "Cancel(): missing in stream_map: fragment=" << i->first
-          << " node=" << i->second;
-      LOG(ERROR) << err.str();
-    } else {
+    bool unused;
+    shared_ptr<DataStreamRecvr> recvr = FindRecvr(i->first, i->second, &unused);
+    if (recvr) {
       recvr->CancelStream();
+    } else {
+      // keep going but at least log it
+      LOG(ERROR) << Substitute("Cancel(): missing in stream_map: fragment=$0 node=$1",
+          PrintId(i->first), i->second);
     }
     ++i;
   }
+}
+
+void DataStreamMgr::Maintenance() {
+  while (true) {
+    // Notify any senders that have been waiting too long for their receiver to
+    // appear. Keep lock_ held for only a short amount of time.
+    vector<unique_ptr<TransmitDataCtx>> senders;
+    {
+      int64_t now = MonotonicMillis();
+      lock_guard<mutex> l(lock_);
+      auto it = early_senders_.begin();
+      while (it != early_senders_.end()) {
+        if (now - it->second.arrival_time > FLAGS_datastream_sender_timeout_ms) {
+          for (auto& s: it->second.waiting_senders) {
+            senders.emplace_back(move(s));
+          }
+          it = early_senders_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+
+    for (const auto& ctx: senders) {
+      const TransmitDataRequestPb* request = ctx->request;
+      TUniqueId finst_id;
+      finst_id.__set_lo(request->dest_fragment_instance_id().lo());
+      finst_id.__set_hi(request->dest_fragment_instance_id().hi());
+
+      Status(TErrorCode::DATASTREAM_SENDER_TIMEOUT, PrintId(finst_id)).ToProto(
+          ctx->response->mutable_status());
+      ctx->context->RespondSuccess();
+      num_senders_waiting_->Increment(-1);
+      num_senders_timedout_->Increment(1);
+    }
+
+    bool timed_out = false;
+    // Wait for 10s
+    shutdown_promise_.Get(10000, &timed_out);
+    if (!timed_out) return;
+  }
+}
+
+DataStreamMgr::~DataStreamMgr() {
+  shutdown_promise_.Set(true);
+  deserialize_pool_.Shutdown();
+  LOG(INFO) << "Waiting for data-stream-mgr maintenance thread...";
+  maintenance_thread_->Join();
+  LOG(INFO) << "Waiting for response thread pool...";
+  deserialize_pool_.Join();
 }
 
 }

@@ -66,4 +66,5 @@ class TestRuntimeRowFilters(ImpalaTestSuite):
   @SkipIfOldAggsJoins.requires_spilling
   @SkipIfOldAggsJoins.nested_types
   def test_row_filters_phj_only(self, vector):
+    pytest.skip("Needs large message support from KRPC (IMPALA-4874)")
     self.run_test_case('QueryTest/runtime_row_filters_phj', vector)

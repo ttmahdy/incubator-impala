@@ -255,11 +255,11 @@ namespace either {
 struct TestData {
   explicit TestData(int log_heap_size) {
     BloomFilter bf(log_heap_size);
-    BloomFilter::ToThrift(&bf, &tbf1);
-    BloomFilter::ToThrift(&bf, &tbf2);
+    BloomFilter::ToProto(&bf, &tbf1);
+    BloomFilter::ToProto(&bf, &tbf2);
   }
 
-  TBloomFilter tbf1, tbf2;
+  ProtoBloomFilter tbf1, tbf2;
 };
 
 void Benchmark(int batch_size, void* data) {

@@ -22,6 +22,7 @@
 #include "kudu/gutil/strings/substitute.h"
 
 using std::unique_ptr;
+using std::shared_ptr;
 
 namespace kudu {
 namespace rpc {
@@ -46,6 +47,19 @@ class FaststringSidecar : public RpcSidecar {
  private:
   const unique_ptr<faststring> data_;
 };
+
+class SharedPtrSidecar : public RpcSidecar {
+ public:
+  explicit SharedPtrSidecar(shared_ptr<faststring> data) : data_(std::move(data)) { }
+  Slice AsSlice() const override { return *data_; }
+
+ private:
+  const shared_ptr<faststring> data_;
+};
+
+unique_ptr<RpcSidecar> RpcSidecar::FromSharedPtr(shared_ptr<faststring> data) {
+  return unique_ptr<RpcSidecar>(new SharedPtrSidecar(std::move(data)));
+}
 
 unique_ptr<RpcSidecar> RpcSidecar::FromFaststring(unique_ptr<faststring> data) {
   return unique_ptr<RpcSidecar>(new FaststringSidecar(std::move(data)));

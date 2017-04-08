@@ -19,19 +19,6 @@
 
 namespace impala{
 
-BackendConfig::BackendConfig(const std::vector<TNetworkAddress>& backends) {
-  // Construct backend_map and backend_ip_map.
-  for (const TNetworkAddress& backend: backends) {
-    IpAddr ip;
-    Status status = HostnameToIpAddr(backend.hostname, &ip);
-    if (!status.ok()) {
-      VLOG(1) << status.GetDetail();
-      continue;
-    }
-    AddBackend(MakeBackendDescriptor(backend.hostname, ip, backend.port));
-  }
-}
-
 const BackendConfig::BackendList& BackendConfig::GetBackendListForHost(
     const IpAddr& ip) const {
   BackendMap::const_iterator it = backend_map_.find(ip);
@@ -84,6 +71,16 @@ bool BackendConfig::LookUpBackendIp(const Hostname& hostname, IpAddr* ip) const 
     return true;
   }
   return false;
+}
+
+const TBackendDescriptor& BackendConfig::LookUpBackendDescriptor(
+    const TNetworkAddress& addr) const {
+  const BackendList& list = GetBackendListForHost(addr.hostname);
+  for (const auto& l : list) {
+    if (l.ip_address == addr.hostname && l.address.port == addr.port) return l;
+  }
+  DCHECK(false);
+  return *list.begin();
 }
 
 }  // end ns impala

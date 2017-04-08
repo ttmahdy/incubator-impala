@@ -214,7 +214,7 @@ void TAcceptQueueServer::serve() {
   // New - this is the thread pool used to process the internal accept queue.
   ThreadPool<shared_ptr<TTransport>> connection_setup_pool("setup-server", "setup-worker",
       CONNECTION_SETUP_POOL_SIZE, FLAGS_accepted_cnxn_queue_depth,
-      [this](int tid, const shared_ptr<TTransport>& item) {
+      [this](int tid, shared_ptr<TTransport>&& item) {
         this->SetupConnection(item);
       });
 

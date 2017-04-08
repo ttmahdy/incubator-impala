@@ -41,9 +41,8 @@ class InProcessImpalaServer {
  public:
   /// Initialises the server, but does not start any network-attached
   /// services or run any threads.
-  InProcessImpalaServer(const std::string& hostname, int backend_port,
-                        int subscriber_port, int webserver_port,
-                        const std::string& statestore_host, int statestore_port);
+  InProcessImpalaServer(const std::string& hostname, int backend_port, int data_svc_port,
+      int webserver_port, const std::string& statestore_host, int statestore_port);
 
   /// Starts an in-process Impala server with ephemeral ports that are independent of the
   /// ports used by a concurrently running normal Impala daemon. The hostname is set to
@@ -55,18 +54,14 @@ class InProcessImpalaServer {
   static InProcessImpalaServer* StartWithEphemeralPorts(
       const std::string& statestore_host = "", int statestore_port = 0);
 
-  /// Starts all servers, including the beeswax and hs2 client
-  /// servers. If use_statestore is set, a connection to the statestore
-  /// is established. If there is no error, returns Status::OK.
-  Status StartWithClientServers(int beeswax_port, int hs2_port, bool use_statestore);
-
-  /// Starts only the backend server; useful when running a cluster of
-  /// InProcessImpalaServers and only one is to serve client requests.
-  Status StartAsBackendOnly(bool use_statestore);
+  /// Starts all servers, including the beeswax and hs2 client servers. If there is no
+  /// error, returns Status::OK.
+  Status StartWithClientServers(int beeswax_port, int hs2_port);
 
   /// Blocks until the backend server exits. Returns Status::OK unless
   /// there was an error joining.
-  Status Join();
+  void Join();
+  void Shutdown();
 
   ImpalaServer* impala_server() { return impala_server_.get(); }
 
@@ -97,16 +92,6 @@ class InProcessImpalaServer {
 
   /// ExecEnv holds much of the per-service state
   boost::scoped_ptr<ExecEnv> exec_env_;
-
-  /// Backend Thrift server
-  boost::scoped_ptr<ThriftServer> be_server_;
-
-  /// Frontend HiveServer2 server
-  boost::scoped_ptr<ThriftServer> hs2_server_;
-
-  /// Frontend Beeswax server.
-  boost::scoped_ptr<ThriftServer> beeswax_server_;
-
 };
 
 }

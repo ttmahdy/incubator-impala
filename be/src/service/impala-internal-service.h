@@ -19,12 +19,13 @@
 #define IMPALA_SERVICE_IMPALA_INTERNAL_SERVICE_H
 
 #include "gen-cpp/ImpalaInternalService.h"
-#include "gen-cpp/ImpalaInternalService_types.h"
+#include "service/data_stream_service.service.h"
 
 namespace impala {
 
-class ImpalaServer;
 class QueryExecMgr;
+class ImpalaServer;
+class RpcMgr;
 
 /// Proxies Thrift RPC requests onto their implementing objects for the
 /// ImpalaInternalService service.
@@ -37,16 +38,28 @@ class ImpalaInternalService : public ImpalaInternalServiceIf {
       const TCancelQueryFInstancesParams& params);
   virtual void ReportExecStatus(TReportExecStatusResult& return_val,
       const TReportExecStatusParams& params);
-  virtual void TransmitData(TTransmitDataResult& return_val,
-      const TTransmitDataParams& params);
-  virtual void UpdateFilter(TUpdateFilterResult& return_val,
-      const TUpdateFilterParams& params);
-  virtual void PublishFilter(TPublishFilterResult& return_val,
-      const TPublishFilterParams& params);
 
  private:
   ImpalaServer* impala_server_;
   QueryExecMgr* query_exec_mgr_;
+};
+
+/// Handles data flow between execution nodes: transmitting tuples and filters.
+class DataStreamService : public DataStreamServiceIf {
+ public:
+  DataStreamService(RpcMgr* rpc_mgr);
+
+  virtual void EndDataStream(const EndDataStreamRequestPb* request,
+      EndDataStreamResponsePb* response, kudu::rpc::RpcContext* context);
+
+  virtual void TransmitData(const TransmitDataRequestPb* request,
+      TransmitDataResponsePb* response, kudu::rpc::RpcContext* context);
+
+  virtual void PublishFilter(const PublishFilterRequestPb* request,
+      PublishFilterResponsePb* response, kudu::rpc::RpcContext* context);
+
+  virtual void UpdateFilter(const UpdateFilterRequestPb* request,
+      UpdateFilterResponsePb* response, kudu::rpc::RpcContext* context);
 };
 
 }

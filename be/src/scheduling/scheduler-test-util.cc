@@ -506,7 +506,7 @@ void SchedulerWrapper::InitializeScheduler() {
   scheduler_backend_address.port = scheduler_host.be_port;
 
   scheduler_.reset(new Scheduler(nullptr, scheduler_backend_id, scheduler_backend_address,
-      &metrics_, nullptr, nullptr));
+      scheduler_backend_address.port, &metrics_, nullptr, nullptr));
   scheduler_->Init();
   // Initialize the scheduler backend maps.
   SendFullMembershipMap();

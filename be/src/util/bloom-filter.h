@@ -26,12 +26,53 @@
 #include <immintrin.h>
 
 #include "common/compiler-util.h"
-#include "gen-cpp/ImpalaInternalService_types.h"
 #include "gutil/macros.h"
+#include "kudu/util/slice.h"
 #include "runtime/buffered-block-mgr.h"
+#include "service/data_stream_service.pb.h"
 #include "util/hash-util.h"
 
 namespace impala {
+
+/// Container struct for Bloom filters serialized to Protobuffers. Metadata about the
+/// filter is stored in 'header', and the filter contents is referred to by 'directory'.
+/// Inbound RPCs produce ProtoBloomFilters that do not own their directory data. Outbound
+/// RPC payloads own the directory data.
+struct ProtoBloomFilter {
+ public:
+  ProtoBloomFilter(const BloomFilterPb header, kudu::Slice dir) : header(header) {
+    directory_data->resize(dir.size());
+    memcpy(directory_data->data(), dir.data(), dir.size());
+    directory = kudu::Slice(*directory_data);
+    DCHECK(directory_data->size() > 0 || header.always_true());
+  }
+
+  ProtoBloomFilter() = default;
+  ProtoBloomFilter(ProtoBloomFilter&& other) {
+    header = std::move(other.header);
+    // If the other filter owns its directory, assume ownership. Otherwise copy the
+    // other's slice only.
+    if (other.directory_data->size() > 0) {
+      directory_data = std::move(other.directory_data);
+      directory = kudu::Slice(*directory_data);
+    } else {
+      directory = other.directory;
+    }
+  }
+
+  /// Metadata for the bloom filter.
+  BloomFilterPb header;
+
+  /// If the directory data is owned by this object, it's stored here (and 'directory'
+  /// refers to it). shared_ptr<> so that it may be used as an RPC sidecar payload.
+  std::shared_ptr<kudu::faststring> directory_data = std::make_shared<kudu::faststring>();
+
+  /// Points to the filter directory. Either references directory_data, or an RPC payload.
+  kudu::Slice directory;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(ProtoBloomFilter);
+};
 
 /// A BloomFilter stores sets of items and offers a query operation indicating whether or
 /// not that item is in the set.  BloomFilters use much less space than other compact data
@@ -59,15 +100,18 @@ class BloomFilter {
  public:
   /// Consumes at most (1 << log_heap_space) bytes on the heap.
   explicit BloomFilter(const int log_heap_space);
-  explicit BloomFilter(const TBloomFilter& thrift);
+  explicit BloomFilter(const ProtoBloomFilter& proto);
   ~BloomFilter();
 
   /// Representation of a filter which allows all elements to pass.
   static constexpr BloomFilter* const ALWAYS_TRUE_FILTER = NULL;
 
-  /// Converts 'filter' to its corresponding Thrift representation. If the first argument
-  /// is NULL, it is interpreted as a complete filter which contains all elements.
-  static void ToThrift(const BloomFilter* filter, TBloomFilter* thrift);
+  /// Converts 'filter' to its corresponding protobuf representation. If the first
+  /// argument is nullptr, it is interpreted as a complete filter which contains all
+  /// elements. The directory data in 'filter' is copied to 'proto'.
+  /// TODO: Consider moving rather than copying, since most filters aren't used after this
+  /// returns.
+  static void ToProto(const BloomFilter* filter, ProtoBloomFilter* proto);
 
   /// Adds an element to the BloomFilter. The function used to generate 'hash' need not
   /// have good uniformity, but it should have low collision probability. For instance, if
@@ -81,7 +125,7 @@ class BloomFilter {
   bool Find(const uint32_t hash) const noexcept;
 
   /// Computes the logical OR of 'in' with 'out' and stores the result in 'out'.
-  static void Or(const TBloomFilter& in, TBloomFilter* out);
+  static void Or(const ProtoBloomFilter& in, ProtoBloomFilter* out);
 
   /// As more distinct items are inserted into a BloomFilter, the false positive rate
   /// rises. MaxNdv() returns the NDV (number of distinct values) at which a BloomFilter
@@ -153,8 +197,8 @@ class BloomFilter {
     return 1uLL << (log_num_buckets_ + LOG_BUCKET_BYTE_SIZE);
   }
 
-  /// Serializes this filter as Thrift.
-  void ToThrift(TBloomFilter* thrift) const;
+  /// Serializes this filter as protobuf.
+  void ToProto(ProtoBloomFilter* proto) const;
 
   /// Some constants used in hashing. #defined for efficiency reasons.
 #define IMPALA_BLOOM_HASH_CONSTANTS                                             \

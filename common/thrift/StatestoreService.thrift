@@ -72,6 +72,9 @@ struct TBackendDescriptor {
 
   // True if the debug webserver is secured (for correctly generating links)
   6: optional bool secure_webserver;
+
+  // The port on which the data stream service is running.
+  7: optional i32 data_svc_port;
 }
 
 // Description of a single entry in a topic

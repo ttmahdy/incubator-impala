@@ -18,34 +18,35 @@
 #ifndef IMPALA_SERVICE_IMPALA_SERVER_H
 #define IMPALA_SERVICE_IMPALA_SERVER_H
 
-#include <boost/thread/mutex.hpp>
-#include <boost/shared_ptr.hpp>
+#include <boost/enable_shared_from_this.hpp>
 #include <boost/scoped_ptr.hpp>
+#include <boost/shared_ptr.hpp>
+#include <boost/thread/mutex.hpp>
 #include <boost/unordered_map.hpp>
 #include <boost/unordered_set.hpp>
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 
-#include "gen-cpp/ImpalaService.h"
-#include "gen-cpp/ImpalaHiveServer2Service.h"
-#include "gen-cpp/ImpalaInternalService.h"
-#include "gen-cpp/Frontend_types.h"
-#include "rpc/thrift-server.h"
 #include "common/status.h"
+#include "gen-cpp/Frontend_types.h"
+#include "gen-cpp/Frontend_types.h"
+#include "gen-cpp/ImpalaHiveServer2Service.h"
+#include "gen-cpp/ImpalaService.h"
+#include "rpc/thrift-server.h"
+#include "runtime/coordinator.h"
+#include "runtime/runtime-state.h"
+#include "runtime/timestamp-value.h"
+#include "runtime/types.h"
 #include "service/frontend.h"
 #include "service/query-options.h"
+#include "statestore/statestore-subscriber.h"
 #include "util/metrics.h"
 #include "util/runtime-profile.h"
 #include "util/simple-logger.h"
 #include "util/thread-pool.h"
 #include "util/time.h"
 #include "util/uid-util.h"
-#include "runtime/coordinator.h"
-#include "runtime/runtime-state.h"
-#include "runtime/timestamp-value.h"
-#include "runtime/types.h"
-#include "statestore/statestore-subscriber.h"
 
 namespace impala {
 
@@ -60,8 +61,6 @@ class TPlanExecParams;
 class TInsertResult;
 class TReportExecStatusArgs;
 class TReportExecStatusResult;
-class TTransmitDataArgs;
-class TTransmitDataResult;
 class TNetworkAddress;
 class TClientRequest;
 class TExecRequest;
@@ -70,10 +69,11 @@ class TQueryOptions;
 class TGetExecSummaryResp;
 class TGetExecSummaryReq;
 class ClientRequestState;
+class ProtoBloomFilter;
 
-/// An ImpalaServer contains both frontend and backend functionality;
-/// it implements ImpalaService (Beeswax), ImpalaHiveServer2Service (HiveServer2)
-/// and ImpalaInternalService APIs.
+/// An ImpalaServer contains both frontend and backend functionality; it implements
+/// ImpalaService (Beeswax), ImpalaHiveServer2Service (HiveServer2), ImpalaInternalService
+/// and DataStreamService APIs.
 ///
 /// Locking
 /// -------
@@ -109,11 +109,28 @@ class ClientRequestState;
 /// TODO: The same doesn't apply to the execution state of an individual plan
 /// fragment: the originating coordinator might die, but we can get notified of
 /// that via the statestore. This still needs to be implemented.
-class ImpalaServer : public ImpalaServiceIf, public ImpalaHiveServer2ServiceIf,
-                     public ThriftServer::ConnectionHandlerIf {
+class ImpalaServer : public ImpalaServiceIf,
+                     public ImpalaHiveServer2ServiceIf,
+                     public ThriftServer::ConnectionHandlerIf,
+                     public boost::enable_shared_from_this<ImpalaServer> {
  public:
   ImpalaServer(ExecEnv* exec_env);
   ~ImpalaServer();
+
+  /// Initializes RPC services and other subsystems (like audit logging). Returns an error
+  /// if initialization failed. If any ports are <= 0, their respective service will not
+  /// be started.
+  Status Init(int32_t beeswax_port, int32_t hs2_port);
+
+  /// Starts client and internal services. Does not block. Returns an error if any service
+  /// failed to start.
+  Status Start();
+
+  /// Blocks until the server shuts down (by calling Shutdown()).
+  void Join();
+
+  /// Triggers service shutdown, by unblocking Join().
+  void Shutdown();
 
   /// ImpalaService rpcs: Beeswax API (implemented in impala-beeswax-server.cc)
   virtual void query(beeswax::QueryHandle& query_handle, const beeswax::Query& query);
@@ -232,13 +249,11 @@ class ImpalaServer : public ImpalaServiceIf, public ImpalaHiveServer2ServiceIf,
       apache::hive::service::cli::thrift::TRenewDelegationTokenResp& return_val,
       const apache::hive::service::cli::thrift::TRenewDelegationTokenReq& req);
 
-  /// ImpalaInternalService rpcs
+  /// ImpalaInternalService and DataStreamService rpcs
   void ReportExecStatus(TReportExecStatusResult& return_val,
       const TReportExecStatusParams& params);
-  void TransmitData(TTransmitDataResult& return_val,
-      const TTransmitDataParams& params);
-  void UpdateFilter(TUpdateFilterResult& return_val,
-      const TUpdateFilterParams& params);
+  void UpdateFilter(
+      int32_t filter_id, const TUniqueId& query_id, const ProtoBloomFilter& filter);
 
   /// Generates a unique id for this query and sets it in the given query context.
   /// Prepares the given query context by populating fields required for evaluating
@@ -981,25 +996,21 @@ class ImpalaServer : public ImpalaServiceIf, public ImpalaHiveServer2ServiceIf,
 
   /// True if this ImpalaServer can execute query fragments.
   bool is_executor_;
-};
 
-/// Create an ImpalaServer and Thrift servers.
-/// If beeswax_port != 0 (and fe_server != NULL), creates a ThriftServer exporting
-/// ImpalaService (Beeswax) on beeswax_port (returned via beeswax_server).
-/// If hs2_port != 0 (and hs2_server != NULL), creates a ThriftServer exporting
-/// ImpalaHiveServer2Service on hs2_port (returned via hs2_server).
-/// ImpalaService and ImpalaHiveServer2Service are initialized only if this
-/// Impala server is a coordinator (indicated by the is_coordinator flag).
-/// If be_port != 0 (and be_server != NULL), create a ThriftServer exporting
-/// ImpalaInternalService on be_port (returned via be_server).
-/// Returns created ImpalaServer. The caller owns fe_server and be_server.
-/// The returned ImpalaServer is referenced by both of these via shared_ptrs and will be
-/// deleted automatically.
-/// Returns OK unless there was some error creating the servers, in
-/// which case none of the output parameters can be assumed to be valid.
-Status CreateImpalaServer(ExecEnv* exec_env, int beeswax_port, int hs2_port,
-    int be_port, ThriftServer** beeswax_server, ThriftServer** hs2_server,
-    ThriftServer** be_server, boost::shared_ptr<ImpalaServer>* impala_server);
+  /// Port on which internal services should be run.
+  int internal_service_port_ = 0;
+
+  /// Containers for client services. May not be set if the ports passed to Init() were <=
+  /// 0.
+  boost::shared_ptr<ThriftServer> beeswax_server_;
+  boost::shared_ptr<ThriftServer> hs2_server_;
+
+  /// Container for backend control service.
+  boost::shared_ptr<ThriftServer> be_server_;
+
+  /// Set to true when this ImpalaServer should shut down.
+  Promise<bool> shutdown_promise_;
+};
 
 }
 

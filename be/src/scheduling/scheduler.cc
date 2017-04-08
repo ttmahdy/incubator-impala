@@ -44,6 +44,7 @@ using namespace strings;
 
 DECLARE_int32(be_port);
 DECLARE_string(hostname);
+DECLARE_int32(state_store_subscriber_port);
 
 namespace impala {
 
@@ -55,7 +56,8 @@ static const string NUM_BACKENDS_KEY("simple-scheduler.num-backends");
 const string Scheduler::IMPALA_MEMBERSHIP_TOPIC("impala-membership");
 
 Scheduler::Scheduler(StatestoreSubscriber* subscriber, const string& backend_id,
-    const TNetworkAddress& backend_address, MetricGroup* metrics, Webserver* webserver,
+    const TNetworkAddress& backend_address, int32_t data_svc_port,
+    MetricGroup* metrics, Webserver* webserver,
     RequestPoolService* request_pool_service)
   : executors_config_(std::make_shared<const BackendConfig>()),
     metrics_(metrics->GetOrCreateChildGroup("scheduler")),
@@ -68,21 +70,7 @@ Scheduler::Scheduler(StatestoreSubscriber* subscriber, const string& backend_id,
     initialized_(nullptr),
     request_pool_service_(request_pool_service) {
   local_backend_descriptor_.address = backend_address;
-}
-
-Scheduler::Scheduler(const vector<TNetworkAddress>& backends, MetricGroup* metrics,
-    Webserver* webserver, RequestPoolService* request_pool_service)
-  : executors_config_(std::make_shared<const BackendConfig>(backends)),
-    metrics_(metrics),
-    webserver_(webserver),
-    statestore_subscriber_(nullptr),
-    thrift_serializer_(false),
-    total_assignments_(nullptr),
-    total_local_assignments_(nullptr),
-    initialized_(nullptr),
-    request_pool_service_(request_pool_service) {
-  DCHECK(backends.size() > 0);
-  local_backend_descriptor_.address = MakeNetworkAddress(FLAGS_hostname, FLAGS_be_port);
+  local_backend_descriptor_.data_svc_port = data_svc_port;
 }
 
 Status Scheduler::Init() {
@@ -236,10 +224,10 @@ void Scheduler::SetExecutorsConfig(const ExecutorsConfigPtr& executors_config) {
   executors_config_ = executors_config;
 }
 
-Status Scheduler::ComputeScanRangeAssignment(QuerySchedule* schedule) {
+Status Scheduler::ComputeScanRangeAssignment(const BackendConfig& backend_config,
+    QuerySchedule* schedule) {
   RuntimeProfile::Counter* total_assignment_timer =
       ADD_TIMER(schedule->summary_profile(), "ComputeScanRangeAssignmentTimer");
-  ExecutorsConfigPtr executor_config = GetExecutorsConfig();
   const TQueryExecRequest& exec_request = schedule->request();
   for (const TPlanExecInfo& plan_exec_info : exec_request.plan_exec_info) {
     for (const auto& entry : plan_exec_info.per_node_scan_ranges) {
@@ -262,7 +250,7 @@ Status Scheduler::ComputeScanRangeAssignment(QuerySchedule* schedule) {
       FragmentScanRangeAssignment* assignment =
           &schedule->GetFragmentExecParams(fragment.idx)->scan_range_assignment;
       RETURN_IF_ERROR(
-          ComputeScanRangeAssignment(*executor_config, node_id, node_replica_preference,
+          ComputeScanRangeAssignment(backend_config, node_id, node_replica_preference,
               node_random_replica, entry.second, exec_request.host_list, exec_at_coord,
               schedule->query_options(), total_assignment_timer, assignment));
       schedule->IncNumScanRanges(entry.second.size());
@@ -271,13 +259,14 @@ Status Scheduler::ComputeScanRangeAssignment(QuerySchedule* schedule) {
   return Status::OK();
 }
 
-void Scheduler::ComputeFragmentExecParams(QuerySchedule* schedule) {
+void Scheduler::ComputeFragmentExecParams(const BackendConfig& config,
+    QuerySchedule* schedule) {
   const TQueryExecRequest& exec_request = schedule->request();
 
   // for each plan, compute the FInstanceExecParams for the tree of fragments
   for (const TPlanExecInfo& plan_exec_info : exec_request.plan_exec_info) {
     // set instance_id, host, per_node_scan_ranges
-    ComputeFragmentExecParams(plan_exec_info,
+    ComputeFragmentExecParams(config, plan_exec_info,
         schedule->GetFragmentExecParams(plan_exec_info.fragments[0].idx), schedule);
 
     // Set destinations, per_exch_num_senders, sender_id.
@@ -297,6 +286,8 @@ void Scheduler::ComputeFragmentExecParams(QuerySchedule* schedule) {
         TPlanFragmentDestination& dest = src_params->destinations[i];
         dest.__set_fragment_instance_id(dest_params->instance_exec_params[i].instance_id);
         dest.__set_server(dest_params->instance_exec_params[i].host);
+        DCHECK(IsResolvedAddress(dest_params->instance_exec_params[i].data_svc));
+        dest.__set_data_svc(dest_params->instance_exec_params[i].data_svc);
       }
 
       // enumerate senders consecutively;
@@ -318,24 +309,30 @@ void Scheduler::ComputeFragmentExecParams(QuerySchedule* schedule) {
   }
 }
 
-void Scheduler::ComputeFragmentExecParams(const TPlanExecInfo& plan_exec_info,
+void Scheduler::ComputeFragmentExecParams(const BackendConfig& config,
+    const TPlanExecInfo& plan_exec_info,
     FragmentExecParams* fragment_params, QuerySchedule* schedule) {
   // traverse input fragments
   for (FragmentIdx input_fragment_idx : fragment_params->input_fragments) {
-    ComputeFragmentExecParams(
+    ComputeFragmentExecParams(config,
         plan_exec_info, schedule->GetFragmentExecParams(input_fragment_idx), schedule);
   }
 
   const TPlanFragment& fragment = fragment_params->fragment;
   // case 1: single instance executed at coordinator
   if (fragment.partition.type == TPartitionType::UNPARTITIONED) {
-    const TNetworkAddress& coord = local_backend_descriptor_.address;
+    const TNetworkAddress& coord =
+        MakeNetworkAddress(local_backend_descriptor_.ip_address, local_backend_descriptor_.address.port);
+    const TNetworkAddress& data_svc =
+        MakeNetworkAddress(local_backend_descriptor_.ip_address,
+            local_backend_descriptor_.data_svc_port);
     // make sure that the coordinator instance ends up with instance idx 0
     TUniqueId instance_id = fragment_params->is_coord_fragment
         ? schedule->query_id()
         : schedule->GetNextInstanceId();
+    DCHECK(IsResolvedAddress(coord));
     fragment_params->instance_exec_params.emplace_back(
-        instance_id, coord, 0, *fragment_params);
+        instance_id, coord, data_svc, 0, *fragment_params);
     FInstanceExecParams& instance_params = fragment_params->instance_exec_params.back();
 
     // That instance gets all of the scan ranges, if there are any.
@@ -349,7 +346,7 @@ void Scheduler::ComputeFragmentExecParams(const TPlanExecInfo& plan_exec_info,
   }
 
   if (ContainsNode(fragment.plan, TPlanNodeType::UNION_NODE)) {
-    CreateUnionInstances(fragment_params, schedule);
+    CreateUnionInstances(config, fragment_params, schedule);
     return;
   }
 
@@ -357,16 +354,16 @@ void Scheduler::ComputeFragmentExecParams(const TPlanExecInfo& plan_exec_info,
   if (leftmost_scan_id != g_ImpalaInternalService_constants.INVALID_PLAN_NODE_ID) {
     // case 2: leaf fragment with leftmost scan
     // TODO: check that there's only one scan in this fragment
-    CreateScanInstances(leftmost_scan_id, fragment_params, schedule);
+    CreateScanInstances(config, leftmost_scan_id, fragment_params, schedule);
   } else {
     // case 3: interior fragment without leftmost scan
     // we assign the same hosts as those of our leftmost input fragment (so that a
     // merge aggregation fragment runs on the hosts that provide the input data)
-    CreateCollocatedInstances(fragment_params, schedule);
+    CreateCollocatedInstances(config, fragment_params, schedule);
   }
 }
 
-void Scheduler::CreateUnionInstances(
+void Scheduler::CreateUnionInstances(const BackendConfig& config,
     FragmentExecParams* fragment_params, QuerySchedule* schedule) {
   const TPlanFragment& fragment = fragment_params->fragment;
   DCHECK(ContainsNode(fragment.plan, TPlanNodeType::UNION_NODE));
@@ -395,9 +392,13 @@ void Scheduler::CreateUnionInstances(
   // create a single instance per host
   // TODO-MT: figure out how to parallelize Union
   int per_fragment_idx = 0;
-  for (const TNetworkAddress& host : hosts) {
-    fragment_params->instance_exec_params.emplace_back(
-        schedule->GetNextInstanceId(), host, per_fragment_idx++, *fragment_params);
+  for (const TNetworkAddress& host: hosts) {
+    DCHECK(IsResolvedAddress(host));
+    TBackendDescriptor desc = config.LookUpBackendDescriptor(host);
+    TNetworkAddress data_svc = MakeNetworkAddress(desc.ip_address, desc.data_svc_port);
+    fragment_params->instance_exec_params.emplace_back(schedule->GetNextInstanceId(),
+        host, data_svc, per_fragment_idx++, *fragment_params);
+
     // assign all scan ranges
     FInstanceExecParams& instance_params = fragment_params->instance_exec_params.back();
     if (fragment_params->scan_range_assignment.count(host) > 0) {
@@ -406,16 +407,22 @@ void Scheduler::CreateUnionInstances(
   }
 }
 
-void Scheduler::CreateScanInstances(PlanNodeId leftmost_scan_id,
-    FragmentExecParams* fragment_params, QuerySchedule* schedule) {
+void Scheduler::CreateScanInstances(const BackendConfig& config,
+    PlanNodeId leftmost_scan_id, FragmentExecParams* fragment_params,
+    QuerySchedule* schedule) {
   int max_num_instances =
       schedule->request().query_ctx.client_request.query_options.mt_dop;
   if (max_num_instances == 0) max_num_instances = 1;
 
   if (fragment_params->scan_range_assignment.empty()) {
     // this scan doesn't have any scan ranges: run a single instance on the coordinator
-    fragment_params->instance_exec_params.emplace_back(schedule->GetNextInstanceId(),
-        local_backend_descriptor_.address, 0, *fragment_params);
+    TNetworkAddress resolved = MakeNetworkAddress(local_backend_descriptor_.ip_address,
+        local_backend_descriptor_.address.port);
+    DCHECK(IsResolvedAddress(resolved));
+    TNetworkAddress data_svc = MakeNetworkAddress(local_backend_descriptor_.ip_address,
+        local_backend_descriptor_.data_svc_port);
+    fragment_params->instance_exec_params.emplace_back(
+        schedule->GetNextInstanceId(), resolved, data_svc, 0, *fragment_params);
     return;
   }
 
@@ -449,8 +456,11 @@ void Scheduler::CreateScanInstances(PlanNodeId leftmost_scan_id,
     int64_t total_assigned_bytes = 0;
     int params_idx = 0; // into params_list
     for (int i = 0; i < num_instances; ++i) {
+      DCHECK(IsResolvedAddress(host));
+      TBackendDescriptor desc = config.LookUpBackendDescriptor(host);
+      TNetworkAddress data_svc = MakeNetworkAddress(desc.ip_address, desc.data_svc_port);
       fragment_params->instance_exec_params.emplace_back(schedule->GetNextInstanceId(),
-          host, per_fragment_instance_idx++, *fragment_params);
+          host, data_svc, per_fragment_instance_idx++, *fragment_params);
       FInstanceExecParams& instance_params = fragment_params->instance_exec_params.back();
 
       // Threshold beyond which we want to assign to the next instance.
@@ -485,7 +495,7 @@ void Scheduler::CreateScanInstances(PlanNodeId leftmost_scan_id,
   }
 }
 
-void Scheduler::CreateCollocatedInstances(
+void Scheduler::CreateCollocatedInstances(const BackendConfig& config,
     FragmentExecParams* fragment_params, QuerySchedule* schedule) {
   DCHECK_GE(fragment_params->input_fragments.size(), 1);
   const FragmentExecParams* input_fragment_params =
@@ -493,8 +503,13 @@ void Scheduler::CreateCollocatedInstances(
   int per_fragment_instance_idx = 0;
   for (const FInstanceExecParams& input_instance_params :
       input_fragment_params->instance_exec_params) {
-    fragment_params->instance_exec_params.emplace_back(schedule->GetNextInstanceId(),
-        input_instance_params.host, per_fragment_instance_idx++, *fragment_params);
+    DCHECK(IsResolvedAddress(input_instance_params.host));
+    TBackendDescriptor desc = config.LookUpBackendDescriptor(input_instance_params.host);
+    TNetworkAddress data_svc = MakeNetworkAddress(desc.ip_address, desc.data_svc_port);
+
+    fragment_params->instance_exec_params.emplace_back(
+        schedule->GetNextInstanceId(), input_instance_params.host,
+        data_svc, per_fragment_instance_idx++, *fragment_params);
   }
 }
 
@@ -687,7 +702,8 @@ void Scheduler::GetScanHosts(TPlanNodeId scan_id, const FragmentExecParams& para
     // TODO: we'll need to revisit this strategy once we can partition joins
     // (in which case this fragment might be executing a right outer join
     // with a large build table)
-    scan_hosts->push_back(local_backend_descriptor_.address);
+    scan_hosts->push_back(MakeNetworkAddress(local_backend_descriptor_.ip_address,
+        local_backend_descriptor_.address.port));
     return;
   }
 }
@@ -699,8 +715,9 @@ Status Scheduler::Schedule(QuerySchedule* schedule) {
   schedule->set_request_pool(resolved_pool);
   schedule->summary_profile()->AddInfoString("Request Pool", resolved_pool);
 
-  RETURN_IF_ERROR(ComputeScanRangeAssignment(schedule));
-  ComputeFragmentExecParams(schedule);
+  ExecutorsConfigPtr executors_config = GetExecutorsConfig();
+  RETURN_IF_ERROR(ComputeScanRangeAssignment(*executors_config, schedule));
+  ComputeFragmentExecParams(*executors_config, schedule);
 #ifndef NDEBUG
   schedule->Validate();
 #endif
@@ -871,8 +888,9 @@ void Scheduler::AssignmentCtx::RecordScanRangeAssignment(
     if (!remote_read) total_local_assignments_->Increment(1);
   }
 
+  TNetworkAddress local = MakeNetworkAddress(executor.ip_address, executor.address.port);
   PerNodeScanRanges* scan_ranges =
-      FindOrInsert(assignment, executor.address, PerNodeScanRanges());
+      FindOrInsert(assignment, local, PerNodeScanRanges());
   vector<TScanRangeParams>* scan_range_params_list =
       FindOrInsert(scan_ranges, node_id, vector<TScanRangeParams>());
   // Add scan range.

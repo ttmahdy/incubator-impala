@@ -83,13 +83,9 @@ class Scheduler {
   ///  - backend_id - unique identifier for this Impala backend (usually a host:port)
   ///  - backend_address - the address that this backend listens on
   Scheduler(StatestoreSubscriber* subscriber, const std::string& backend_id,
-      const TNetworkAddress& backend_address, MetricGroup* metrics, Webserver* webserver,
+      const TNetworkAddress& backend_address, int32_t data_svc_port,
+      MetricGroup* metrics, Webserver* webserver,
       RequestPoolService* request_pool_service);
-
-  /// Initialize with a list of <host:port> pairs in 'static' mode - i.e. the set of
-  /// backends is fixed and will not be updated.
-  Scheduler(const std::vector<TNetworkAddress>& backends, MetricGroup* metrics,
-      Webserver* webserver, RequestPoolService* request_pool_service);
 
   /// Initialises the scheduler, acquiring all resources needed to make scheduling
   /// decisions once this method returns. Register with the subscription manager if
@@ -339,7 +335,7 @@ class Scheduler {
   /// the schedule's TQueryExecRequest.plan_exec_info.
   /// Unpartitioned fragments are assigned to the coordinator. Populate the schedule's
   /// fragment_exec_params_ with the resulting scan range assignment.
-  Status ComputeScanRangeAssignment(QuerySchedule* schedule);
+  Status ComputeScanRangeAssignment(const BackendConfig& backend, QuerySchedule* schedule);
 
   /// Process the list of scan ranges of a single plan node and compute scan range
   /// assignments (returned in 'assignment'). The result is a mapping from hosts to their
@@ -411,13 +407,15 @@ class Scheduler {
   /// TQueryExecRequest.plan_exec_info.
   /// This includes the routing information (destinations, per_exch_num_senders,
   /// sender_id)
-  void ComputeFragmentExecParams(QuerySchedule* schedule);
+  void ComputeFragmentExecParams(const BackendConfig& config,
+      QuerySchedule* schedule);
 
   /// Recursively create FInstanceExecParams and set per_node_scan_ranges for
   /// fragment_params and its input fragments via a depth-first traversal.
   /// All fragments are part of plan_exec_info.
-  void ComputeFragmentExecParams(const TPlanExecInfo& plan_exec_info,
-      FragmentExecParams* fragment_params, QuerySchedule* schedule);
+  void ComputeFragmentExecParams(const BackendConfig& config,
+      const TPlanExecInfo& plan_exec_info, FragmentExecParams* fragment_params,
+      QuerySchedule* schedule);
 
   /// Create instances of the fragment corresponding to fragment_params, which contains
   /// a Union node.
@@ -428,7 +426,8 @@ class Scheduler {
   /// a UnionNode with partitioned joins or grouping aggregates as children runs on
   /// at least as many hosts as the input to those children).
   /// TODO: is this really necessary? If not, revise.
-  void CreateUnionInstances(FragmentExecParams* fragment_params, QuerySchedule* schedule);
+  void CreateUnionInstances(const BackendConfig& config,
+      FragmentExecParams* fragment_params, QuerySchedule* schedule);
 
   /// Create instances of the fragment corresponding to fragment_params to run on the
   /// selected replica hosts of the scan ranges of the node with id scan_id.
@@ -438,13 +437,13 @@ class Scheduler {
   /// each
   /// instances to roughly meet that average.
   /// For all other storage mgrs, it load-balances the number of splits per instance.
-  void CreateScanInstances(
+  void CreateScanInstances(const BackendConfig& config,
       PlanNodeId scan_id, FragmentExecParams* fragment_params, QuerySchedule* schedule);
 
   /// For each instance of fragment_params's input fragment, create a collocated
   /// instance for fragment_params's fragment.
   /// Expects that fragment_params only has a single input fragment.
-  void CreateCollocatedInstances(
+  void CreateCollocatedInstances(const BackendConfig& config,
       FragmentExecParams* fragment_params, QuerySchedule* schedule);
 
   /// Return the id of the leftmost node of any of the given types in 'plan', or

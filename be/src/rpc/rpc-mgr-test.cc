@@ -47,13 +47,17 @@ DECLARE_int32(num_reactor_threads);
 
 namespace impala {
 
-static int32_t SERVICE_PORT = FindUnusedEphemeralPort();
+static int32_t SERVICE_PORT = FindUnusedEphemeralPort(nullptr);
 
 class RpcTest : public testing::Test {
  protected:
   RpcMgr rpc_mgr_;
+  TNetworkAddress localhost_;
 
-  virtual void SetUp() { ASSERT_OK(rpc_mgr_.Init(FLAGS_num_reactor_threads)); }
+  virtual void SetUp() {
+    ASSERT_OK(rpc_mgr_.Init(FLAGS_num_reactor_threads));
+    ASSERT_OK(ResolveAddr(MakeNetworkAddress("localhost", SERVICE_PORT), &localhost_));
+  }
 
   virtual void TearDown() { rpc_mgr_.UnregisterServices(); }
 };
@@ -97,8 +101,7 @@ TEST_F(RpcTest, ServiceSmokeTest) {
   ASSERT_OK(rpc_mgr_.StartServices(SERVICE_PORT, 2));
 
   unique_ptr<PingServiceProxy> proxy;
-  ASSERT_OK(rpc_mgr_.GetProxy<PingServiceProxy>(
-      MakeNetworkAddress("localhost", SERVICE_PORT), &proxy));
+  ASSERT_OK(rpc_mgr_.GetProxy<PingServiceProxy>(localhost_, &proxy));
 
   PingRequestPb request;
   PingResponsePb response;
@@ -122,8 +125,7 @@ TEST_F(RpcTest, RetryPolicyTest) {
   ASSERT_OK(rpc_mgr_.RegisterService(10, 1024, move(impl)));
   rpc_mgr_.StartServices(SERVICE_PORT, 2);
 
-  auto rpc = Rpc<PingServiceProxy>::Make(
-      MakeNetworkAddress("localhost", SERVICE_PORT), &rpc_mgr_);
+  auto rpc = Rpc<PingServiceProxy>::Make(localhost_, &rpc_mgr_);
 
   PingRequestPb request;
   PingResponsePb response;
@@ -146,6 +148,59 @@ TEST_F(RpcTest, RetryPolicyTest) {
   rpc_mgr_.UnregisterServices();
 }
 
+TEST_F(RpcTest, RetryAsyncTest) {
+  int32_t retries = 0;
+  auto cb = [&retries](RpcContext* context) {
+    ++retries;
+    context->RespondRpcFailure(
+        ErrorStatusPB::ERROR_SERVER_TOO_BUSY, kudu::Status::ServiceUnavailable(""));
+  };
+
+  unique_ptr<ServiceIf> impl(
+      new PingServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker(), cb));
+  ASSERT_OK(rpc_mgr_.RegisterService(10, 1024, move(impl)));
+  rpc_mgr_.StartServices(SERVICE_PORT, 2);
+
+  auto rpc = Rpc<PingServiceProxy>::Make(localhost_, &rpc_mgr_);
+
+  PingRequestPb request;
+  PingResponsePb response;
+  Promise<bool> done_signal;
+  Status out_status;
+  auto completion = [&done_signal, &out_status](const Status& status,
+      PingRequestPb* request, PingResponsePb* resp, RpcController* controller) {
+    out_status = FromKuduStatus(controller->status());
+    done_signal.Set(true);
+  };
+  rpc.ExecuteAsync(&PingServiceProxy::PingAsync, &request, &response, completion);
+  done_signal.Get();
+  ASSERT_FALSE(out_status.ok());
+  ASSERT_EQ(RPC_DEFAULT_MAX_ATTEMPTS, retries);
+}
+
+TEST_F(RpcTest, AsyncCallbackAlwaysCalled) {
+  unique_ptr<ServiceIf> impl(
+      new PingServiceImpl(rpc_mgr_.metric_entity(), rpc_mgr_.result_tracker()));
+  ASSERT_OK(rpc_mgr_.RegisterService(10, 1024, move(impl)));
+  rpc_mgr_.StartServices(SERVICE_PORT, 2);
+
+  auto rpc = Rpc<PingServiceProxy>::Make(
+      MakeNetworkAddress("__unknown__host__", SERVICE_PORT), &rpc_mgr_);
+
+  PingRequestPb request;
+  PingResponsePb response;
+  Promise<bool> done_signal;
+  Status out_status;
+  auto completion = [&done_signal, &out_status](const Status& status,
+      PingRequestPb* request, PingResponsePb* resp, RpcController* controller) {
+    out_status = status;
+    done_signal.Set(true);
+  };
+  rpc.ExecuteAsync(&PingServiceProxy::PingAsync, &request, &response, completion);
+  done_signal.Get();
+  ASSERT_FALSE(out_status.ok());
+}
+
 TEST_F(RpcTest, TimeoutTest) {
   // Test that requests will timeout as configured if they take too long.
   auto cb = [](RpcContext* context) {
@@ -158,8 +213,7 @@ TEST_F(RpcTest, TimeoutTest) {
   ASSERT_OK(rpc_mgr_.RegisterService(10, 1024, move(impl)));
   rpc_mgr_.StartServices(SERVICE_PORT, 2);
 
-  auto rpc = Rpc<PingServiceProxy>::Make(
-      MakeNetworkAddress("localhost", SERVICE_PORT), &rpc_mgr_);
+  auto rpc = Rpc<PingServiceProxy>::Make(localhost_, &rpc_mgr_);
 
   PingRequestPb request;
   PingResponsePb response;
@@ -202,13 +256,12 @@ TEST_F(RpcTest, FullServiceQueueTest) {
   ASSERT_OK(rpc_mgr_.RegisterService(NUM_SVC_THREADS, QUEUE_DEPTH, move(impl)));
   rpc_mgr_.StartServices(SERVICE_PORT, 2);
 
-  const TNetworkAddress remote = MakeNetworkAddress("localhost", SERVICE_PORT);
   vector<unique_ptr<PingServiceProxy>> proxies;
   // Start NUM_RPCS RPCS concurrently so that they consume all service threads and then
   // fill the service queue.
   for (int i = 0; i < NUM_RPCS; ++i) {
     unique_ptr<PingServiceProxy> proxy;
-    ASSERT_OK(rpc_mgr_.GetProxy<PingServiceProxy>(remote, &proxy));
+    ASSERT_OK(rpc_mgr_.GetProxy<PingServiceProxy>(localhost_, &proxy));
     PingResponsePb* resp = new PingResponsePb();
     RpcController* controller = new RpcController();
     controller->set_timeout(kudu::MonoDelta::FromSeconds(60));
@@ -222,16 +275,14 @@ TEST_F(RpcTest, FullServiceQueueTest) {
   }
 
   // Queue should be full. Try another RPC and check that it fails due to backpressure.
-  auto rpc = Rpc<PingServiceProxy>::Make(
-      MakeNetworkAddress("localhost", SERVICE_PORT), &rpc_mgr_)
-       .SetTimeout(kudu::MonoDelta::FromSeconds(60))
-       .SetRetryInterval(10)
-       .SetMaxAttempts(10);
-
   PingRequestPb request;
   PingResponsePb response;
 
-  Status status = rpc.Execute(&PingServiceProxy::Ping, request, &response);
+  Status status = Rpc<PingServiceProxy>::Make(localhost_, &rpc_mgr_)
+      .SetTimeout(kudu::MonoDelta::FromSeconds(60))
+      .SetRetryInterval(10)
+      .SetMaxAttempts(10)
+      .Execute(&PingServiceProxy::Ping, request, &response);
   ASSERT_FALSE(status.ok());
   ASSERT_TRUE(
       status.GetDetail().find("dropped due to backpressure. The service queue is full")
@@ -254,12 +305,13 @@ TEST_F(RpcTest, ThriftWrapperTest) {
   rpc_mgr_.StartServices(SERVICE_PORT, 2);
 
   auto rpc = Rpc<PingServiceProxy>::Make(
-      MakeNetworkAddress("localhost", SERVICE_PORT), &rpc_mgr_);
+      localhost_, &rpc_mgr_);
 
   Status status = rpc.ExecuteWithThriftArgs(&PingServiceProxy::PingThrift, &addr, &addr);
   ASSERT_TRUE(status.ok());
   ASSERT_EQ(addr.port, port + 1);
 }
+
 }
 
 IMPALA_TEST_MAIN();

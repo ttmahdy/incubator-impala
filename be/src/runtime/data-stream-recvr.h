@@ -24,9 +24,10 @@
 #include "common/object-pool.h"
 #include "common/status.h"
 #include "gen-cpp/Types_types.h"   // for TUniqueId
-#include "gen-cpp/Results_types.h" // for TRowBatch
 #include "runtime/descriptors.h"
 #include "util/tuple-row-compare.h"
+
+namespace kudu { namespace rpc { class RpcContext; } }
 
 namespace impala {
 
@@ -34,6 +35,7 @@ class DataStreamMgr;
 class SortedRunMerger;
 class MemTracker;
 class RowBatch;
+class TransmitDataCtx;
 class RuntimeProfile;
 
 /// Single receiver of an m:n data stream.
@@ -90,7 +92,7 @@ class DataStreamRecvr {
 
   const TUniqueId& fragment_instance_id() const { return fragment_instance_id_; }
   PlanNodeId dest_node_id() const { return dest_node_id_; }
-  const RowDescriptor& row_desc() const { return *row_desc_; }
+  const RowDescriptor* row_desc() const { return row_desc_; }
   MemTracker* mem_tracker() const { return mem_tracker_.get(); }
 
  private:
@@ -102,9 +104,10 @@ class DataStreamRecvr {
       PlanNodeId dest_node_id, int num_senders, bool is_merging, int total_buffer_limit,
       RuntimeProfile* profile);
 
-  /// Add a new batch of rows to the appropriate sender queue, blocking if the queue is
-  /// full. Called from DataStreamMgr.
-  void AddBatch(const TRowBatch& thrift_batch, int sender_id);
+  /// Add a new batch of rows to the appropriate sender queue. Does not block - if the
+  /// batch can't be added, it is discarded and this method returns. The RPC that
+  /// 'payload' encapsulates will be guaranteed a response to once this method is called.
+  void AddBatch(std::unique_ptr<TransmitDataCtx>&& payload);
 
   /// Indicate that a particular sender is done. Delegated to the appropriate
   /// sender queue. Called from DataStreamMgr.
@@ -162,6 +165,10 @@ class DataStreamRecvr {
   /// Number of bytes received
   RuntimeProfile::Counter* bytes_received_counter_;
 
+  /// Number of bytes received in accepted batches. Ratio of this to
+  /// 'bytes_received_counter_' measures goodput of senders.
+  RuntimeProfile::Counter* bytes_accepted_counter_;
+
   /// Time series of number of bytes received, samples bytes_received_counter_
   RuntimeProfile::TimeSeriesCounter* bytes_received_time_series_counter_;
 
@@ -171,24 +178,20 @@ class DataStreamRecvr {
   /// TODO: Turn this into a wall-clock timer.
   RuntimeProfile::Counter* first_batch_wait_total_timer_;
 
-  /// Total time (summed across all threads) spent waiting for the
-  /// recv buffer to be drained so that new batches can be
-  /// added. Remote plan fragments are blocked for the same amount of
-  /// time.
-  RuntimeProfile::Counter* buffer_full_total_timer_;
+  /// Total number of batches received when the sender queue was full, and rejected.
+  RuntimeProfile::Counter* num_rejected_batches_;
 
-  /// Protects access to buffer_full_wall_timer_. We only want one
-  /// thread to be running the timer at any time, and we use this
-  /// try_mutex to enforce this condition. If a thread does not get
-  /// the lock, it continues to execute, but without running the
-  /// timer.
-  boost::try_mutex buffer_wall_timer_lock_;
-
-  /// Wall time senders spend waiting for the recv buffer to have capacity.
-  RuntimeProfile::Counter* buffer_full_wall_timer_;
+  /// Total number of batches received and accepted into the sender queue.
+  RuntimeProfile::Counter* num_accepted_batches_;
 
   /// Total time spent waiting for data to arrive in the recv buffer
   RuntimeProfile::Counter* data_arrival_timer_;
+
+  /// Pointer to profile's inactive timer.
+  RuntimeProfile::Counter* inactive_timer_;
+
+  /// Total time spent in SenderQueue::GetBatch().
+  RuntimeProfile::Counter* queue_get_batch_time_;
 };
 
 }

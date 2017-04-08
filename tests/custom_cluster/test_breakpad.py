@@ -267,7 +267,7 @@ class TestBreakpad(CustomClusterTestSuite):
     failed_to_start = False
     try:
       self.start_cluster_with_args(minidump_path=self.tmp_dir,
-          beeswax_port=1)
+          dcheck_on_startup=1)
     except CalledProcessError:
       failed_to_start = True
     assert failed_to_start

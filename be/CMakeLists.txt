@@ -191,6 +191,8 @@ set(CLANG_IR_CXX_FLAGS "-emit-llvm" "-c" "-std=c++14" "-DIR_COMPILE" "-DNDEBUG"
   "-DHAVE_INTTYPES_H" "-DHAVE_NETINET_IN_H" "-DBOOST_DATE_TIME_POSIX_TIME_STD_CONFIG"
   "-DBOOST_NO_EXCEPTIONS" "-fcolor-diagnostics" "-Wno-deprecated"
   "-Wno-return-type-c-linkage" "-O1")
+set(CLANG_IR_CXX_FLAGS "${CLANG_IR_CXX_FLAGS}" "-DKUDU_HEADERS_USE_SHORT_STATUS_MACROS"
+  "-DKUDU_HEADERS_USE_RICH_SLICE"  "-DKUDU_HEADERS_NO_STUBS")
 # -Werror: compile warnings should be errors when using the toolchain compiler.
 set(CLANG_IR_CXX_FLAGS "${CLANG_IR_CXX_FLAGS}" "-Werror")
 

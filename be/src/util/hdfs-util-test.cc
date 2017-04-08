@@ -27,11 +27,13 @@
 using namespace impala;
 
 DECLARE_bool(enable_webserver);
+DECLARE_int32(be_port);
 
 TEST(HdfsUtilTest, CheckFilesystemsMatch) {
   // We do not want to start the webserver.
   FLAGS_enable_webserver = false;
   ExecEnv* exec_env = new ExecEnv();
+  exec_env->Init();
 
   // We do this to retrieve the default FS from the frontend.
   exec_env->StartServices();

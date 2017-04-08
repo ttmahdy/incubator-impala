@@ -21,9 +21,11 @@
 #include <boost/thread/locks.hpp>
 
 #include "exprs/expr.h"
+#include "runtime/backend-client.h"
 #include "runtime/bufferpool/buffer-pool.h"
 #include "runtime/bufferpool/reservation-tracker.h"
-#include "runtime/backend-client.h"
+#include "runtime/client-cache.h"
+#include "runtime/client-cache-types.h"
 #include "runtime/exec-env.h"
 #include "runtime/fragment-instance-state.h"
 #include "runtime/mem-tracker.h"
@@ -32,6 +34,8 @@
 #include "util/debug-util.h"
 #include "util/impalad-metrics.h"
 #include "util/thread.h"
+
+#include "gen-cpp/ImpalaInternalService.h"
 
 #include "common/names.h"
 
@@ -337,10 +341,10 @@ void QueryState::Cancel() {
 }
 
 void QueryState::PublishFilter(int32_t filter_id, int fragment_idx,
-    const TBloomFilter& thrift_bloom_filter) {
+    const ProtoBloomFilter& proto_bloom_filter) {
   if (!instances_prepared_promise_.Get().ok()) return;
   DCHECK_EQ(fragment_map_.count(fragment_idx), 1);
   for (FragmentInstanceState* fis: fragment_map_[fragment_idx]) {
-    fis->PublishFilter(filter_id, thrift_bloom_filter);
+    fis->PublishFilter(filter_id, proto_bloom_filter);
   }
 }

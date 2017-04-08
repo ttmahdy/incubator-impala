@@ -22,12 +22,12 @@
 #include <vector>
 #include <string>
 
-#include "exec/data-sink.h"
 #include "common/global-types.h"
 #include "common/object-pool.h"
 #include "common/status.h"
+#include "exec/data-sink.h"
+#include "runtime/row-batch.h"
 #include "util/runtime-profile.h"
-#include "gen-cpp/Results_types.h" // for TRowBatch
 
 namespace impala {
 
@@ -57,12 +57,10 @@ class DataStreamSender : public DataSink {
   /// The RowDescriptor must live until Close() is called.
   /// NOTE: supported partition types are UNPARTITIONED (broadcast), HASH_PARTITIONED,
   /// and RANDOM.
-  DataStreamSender(int sender_id, const RowDescriptor* row_desc,
-      const TDataStreamSink& tsink,
-      const std::vector<TPlanFragmentDestination>& destinations,
-      int per_channel_buffer_size);
-
-  virtual ~DataStreamSender();
+  DataStreamSender(int sender_id,
+    const RowDescriptor* row_desc, const TDataStreamSink& sink,
+    const std::vector<TPlanFragmentDestination>& destinations,
+    int per_channel_buffer_size);
 
   virtual std::string GetName();
 
@@ -93,9 +91,9 @@ class DataStreamSender : public DataSink {
   /// Serializes the src batch into the dest thrift batch. Maintains metrics.
   /// num_receivers is the number of receivers this batch will be sent to. Only
   /// used to maintain metrics.
-  Status SerializeBatch(RowBatch* src, TRowBatch* dest, int num_receivers = 1);
+  Status SerializeBatch(RowBatch* src, OutboundProtoRowBatch* dest, int num_receivers = 1);
 
-  /// Return total number of bytes sent in TRowBatch.data. If batches are
+  /// Return total number of bytes sent in RowBatchPb.data(). If batches are
   /// broadcast to multiple receivers, they are counted once per receiver.
   int64_t GetNumDataBytesSent() const;
 
@@ -112,22 +110,29 @@ class DataStreamSender : public DataSink {
   int sender_id_;
   RuntimeState* state_;
   TPartitionType::type partition_type_; // The type of partitioning to perform.
-  int current_channel_idx_; // index of current channel to send to if random_ == true
+
+  // index of current channel to send to if using RANDOM partitioning.
+  int current_channel_idx_ = 0;
 
   /// If true, this sender has called FlushFinal() successfully.
   /// Not valid to call Send() anymore.
-  bool flushed_;
+  bool flushed_ = false;
 
   /// If true, this sender has been closed. Not valid to call Send() anymore.
-  bool closed_;
+  bool closed_ = false;
 
-  /// serialized batches for broadcasting; we need two so we can write
-  /// one while the other one is still being sent
-  TRowBatch thrift_batch1_;
-  TRowBatch thrift_batch2_;
-  TRowBatch* current_thrift_batch_;  // the next one to fill in Send()
+  /// serialized batches for broadcasting; we need two so we can write one while the other
+  /// one is still being sent. Batches may be processed by the RPC layer after this object
+  /// is destroyed so we share ownership with a shared_ptr<>.
+  /// TODO: When RPC cancellation is available, do not tear down DSS until all RPCs in
+  /// flight have finished.
+  std::vector<std::shared_ptr<OutboundProtoRowBatch>> proto_batches_;
+  int next_batch_idx_ = 0;
 
-  std::vector<Channel*> channels_;
+  std::vector<std::shared_ptr<Channel>> channels_;
+
+  // TODO: Add network throughput counters when KUDU-1858 (add instrumentation to
+  // OutboundCall) is completed.
 
   /// Expressions of partition keys. It's used to compute the
   /// per-row partition values for shuffling exchange;
@@ -135,14 +140,9 @@ class DataStreamSender : public DataSink {
   std::vector<ScalarExprEvaluator*> partition_expr_evals_;
 
   RuntimeProfile::Counter* serialize_batch_timer_;
-  /// The concurrent wall time spent sending data over the network.
-  RuntimeProfile::ConcurrentTimerCounter* thrift_transmit_timer_;
   RuntimeProfile::Counter* bytes_sent_counter_;
   RuntimeProfile::Counter* uncompressed_bytes_counter_;
   RuntimeProfile::Counter* total_sent_rows_counter_;
-
-  /// Throughput per time spent in TransmitData
-  RuntimeProfile::Counter* network_throughput_;
 
   /// Throughput per total time spent in sender
   RuntimeProfile::Counter* overall_throughput_;
@@ -152,7 +152,7 @@ class DataStreamSender : public DataSink {
 
   /// Used for Kudu partitioning to round-robin rows that don't correspond to a partition
   /// or when errors are encountered.
-  int next_unknown_partition_;
+  int next_unknown_partition_ = 0;
 };
 
 }

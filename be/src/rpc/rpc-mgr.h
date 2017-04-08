@@ -133,6 +133,8 @@ class RpcMgr {
     return messenger_->metric_entity();
   }
 
+  kudu::rpc::Messenger* messenger() { return messenger_.get(); }
+
   ~RpcMgr() {
     DCHECK_EQ(service_pools_.size(), 0)
         << "Must call UnregisterServices() before destroying RpcMgr";

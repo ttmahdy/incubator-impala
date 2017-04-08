@@ -25,7 +25,7 @@
 #include <boost/scoped_ptr.hpp>
 
 #include "common/status.h"
-#include "gen-cpp/ImpalaInternalService.h" // for TQueryOptions
+#include "gen-cpp/ImpalaInternalService_types.h" // for TQueryOptions
 #include "scheduling/query-schedule.h"
 #include "util/metrics.h"
 

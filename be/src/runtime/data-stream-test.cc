@@ -17,51 +17,56 @@
 
 #include <boost/thread/thread.hpp>
 
-#include "testutil/gtest-util.h"
+#include "codegen/llvm-codegen.h"
 #include "common/init.h"
 #include "common/logging.h"
 #include "common/status.h"
-#include "codegen/llvm-codegen.h"
 #include "exprs/slot-ref.h"
-#include "rpc/auth-provider.h"
-#include "rpc/thrift-server.h"
-#include "runtime/row-batch.h"
-#include "runtime/runtime-state.h"
-#include "runtime/data-stream-mgr.h"
-#include "runtime/exec-env.h"
-#include "runtime/data-stream-sender.h"
-#include "runtime/data-stream-recvr.h"
-#include "runtime/descriptors.h"
-#include "runtime/client-cache.h"
-#include "runtime/backend-client.h"
-#include "runtime/mem-tracker.h"
-#include "runtime/raw-value.inline.h"
-#include "service/fe-support.h"
-#include "util/cpu-info.h"
-#include "util/disk-info.h"
-#include "util/debug-util.h"
-#include "util/thread.h"
-#include "util/time.h"
-#include "util/mem-info.h"
-#include "util/test-info.h"
-#include "util/tuple-row-compare.h"
-#include "gen-cpp/ImpalaInternalService.h"
+#include "gen-cpp/Descriptors_types.h"
 #include "gen-cpp/ImpalaInternalService_types.h"
 #include "gen-cpp/Types_types.h"
-#include "gen-cpp/Descriptors_types.h"
+#include "rpc/auth-provider.h"
+#include "rpc/rpc-mgr.h"
+#include "rpc/rpc.h"
+#include "runtime/data-stream-mgr.h"
+#include "runtime/data-stream-recvr.h"
+#include "runtime/data-stream-sender.h"
+#include "runtime/descriptors.h"
+#include "runtime/exec-env.h"
+#include "runtime/query-exec-mgr.h"
+#include "runtime/mem-tracker.h"
+#include "runtime/raw-value.inline.h"
+#include "runtime/row-batch.h"
+#include "runtime/runtime-state.h"
 #include "service/fe-support.h"
+#include "service/fe-support.h"
+#include "service/data_stream_service.proxy.h"
+#include "service/data_stream_service.service.h"
+#include "testutil/gtest-util.h"
+#include "util/cpu-info.h"
+#include "util/debug-util.h"
+#include "util/disk-info.h"
+#include "util/mem-info.h"
+#include "util/test-info.h"
+#include "util/thread.h"
+#include "util/time.h"
+#include "util/tuple-row-compare.h"
+#include "util/uid-util.h"
+
+#include "kudu/rpc/rpc_controller.h"
 
 #include <iostream>
 
 #include "common/names.h"
 
 using namespace impala;
-using namespace apache::thrift;
-using namespace apache::thrift::protocol;
+using kudu::rpc::ServiceIf;
+using kudu::rpc::RpcContext;
 
 DEFINE_int32(port, 20001, "port on which to run Impala test backend");
 DECLARE_string(principal);
 DECLARE_int32(datastream_sender_timeout_ms);
+DECLARE_int32(num_reactor_threads);
 
 // We reserve contiguous memory for senders in SetUp. If a test uses more
 // senders, a DCHECK will fail and you should increase this value.
@@ -73,35 +78,55 @@ static const int PER_ROW_DATA = 8;
 static const int TOTAL_DATA_SIZE = 8 * 1024;
 static const int NUM_BATCHES = TOTAL_DATA_SIZE / BATCH_CAPACITY / PER_ROW_DATA;
 
+using kudu::rpc::RpcContext;
 
 namespace impala {
 
-class ImpalaTestBackend : public ImpalaInternalServiceIf {
+class ImpalaTestBackend : public DataStreamServiceIf {
  public:
-  ImpalaTestBackend(DataStreamMgr* stream_mgr): mgr_(stream_mgr) {}
+  ImpalaTestBackend(const scoped_refptr<kudu::MetricEntity>& entity,
+      const scoped_refptr<kudu::rpc::ResultTracker> tracker, DataStreamMgr* mgr)
+    : DataStreamServiceIf(entity, tracker), mgr_(mgr) {}
+
   virtual ~ImpalaTestBackend() {}
 
-  virtual void ExecQueryFInstances(TExecQueryFInstancesResult& return_val,
-      const TExecQueryFInstancesParams& params) {}
-  virtual void CancelQueryFInstances(TCancelQueryFInstancesResult& return_val,
-      const TCancelQueryFInstancesParams& params) {}
-  virtual void ReportExecStatus(TReportExecStatusResult& return_val,
-      const TReportExecStatusParams& params) {}
-  virtual void UpdateFilter(TUpdateFilterResult& return_val,
-      const TUpdateFilterParams& params) {}
-  virtual void PublishFilter(TPublishFilterResult& return_val,
-      const TPublishFilterParams& params) {}
+  virtual void TransmitData(const TransmitDataRequestPb* request,
+      TransmitDataResponsePb* response, RpcContext* context) {
+    TUniqueId id;
+    id.__set_hi(request->dest_fragment_instance_id().hi());
+    id.__set_lo(request->dest_fragment_instance_id().lo());
 
-  virtual void TransmitData(
-      TTransmitDataResult& return_val, const TTransmitDataParams& params) {
-    if (!params.eos) {
-      mgr_->AddData(params.dest_fragment_instance_id, params.dest_node_id,
-                    params.row_batch, params.sender_id).SetTStatus(&return_val);
+    InboundProtoRowBatch batch;
+    batch.header = request->row_batch_header();
+    Status status = FromKuduStatus(context->GetInboundSidecar(
+        request->row_batch_header().tuple_data_sidecar_idx(), &batch.tuple_data));
+    if (status.ok()) {
+      status = FromKuduStatus(context->GetInboundSidecar(
+              request->row_batch_header().tuple_offsets_sidecar_idx(), &batch.tuple_offsets));
+    }
+    if (status.ok()) {
+      mgr_->AddData(id, make_unique<TransmitDataCtx>(batch, context, request, response));
     } else {
-      mgr_->CloseSender(params.dest_fragment_instance_id, params.dest_node_id,
-          params.sender_id).SetTStatus(&return_val);
+      status.ToProto(response->mutable_status());
+      context->RespondSuccess();
     }
   }
+
+  virtual void EndDataStream(const EndDataStreamRequestPb* request,
+      EndDataStreamResponsePb* response, RpcContext* context) {
+    TUniqueId id;
+    id.__set_hi(request->dest_fragment_instance_id().hi());
+    id.__set_lo(request->dest_fragment_instance_id().lo());
+
+    mgr_->CloseSender(id, request->dest_node_id(), request->sender_id());
+    context->RespondSuccess();
+  }
+
+  virtual void PublishFilter(const PublishFilterRequestPb* request,
+      PublishFilterResponsePb* response, RpcContext* context) {}
+
+  virtual void UpdateFilter(const UpdateFilterRequestPb* request,
+      UpdateFilterResponsePb* response, RpcContext* context) {}
 
  private:
   DataStreamMgr* mgr_;
@@ -130,6 +155,11 @@ class DataStreamTest : public testing::Test {
     next_instance_id_.lo = 0;
     next_instance_id_.hi = 0;
     stream_mgr_ = new DataStreamMgr(new MetricGroup(""));
+
+    TQueryCtx ctx;
+    ctx.query_id = GetQueryId(next_instance_id_);
+    ctx.request_pool = "dmmy";
+    query_state_ = ExecEnv::GetInstance()->query_exec_mgr()->CreateQueryState(ctx);
 
     broadcast_sink_.dest_node_id = DEST_NODE_ID;
     broadcast_sink_.output_partition.type = TPartitionType::UNPARTITIONED;
@@ -183,7 +213,7 @@ class DataStreamTest : public testing::Test {
     less_than_->Close(runtime_state_.get());
     ScalarExpr::Close(ordering_exprs_);
     mem_pool_->FreeAll();
-    exec_env_.impalad_client_cache()->TestShutdown();
+    ExecEnv::GetInstance()->query_exec_mgr()->ReleaseQueryState(query_state_);
     StopBackend();
   }
 
@@ -207,6 +237,7 @@ class DataStreamTest : public testing::Test {
   string stmt_;
   // The sorting expression for the single BIGINT column.
   vector<ScalarExpr*> ordering_exprs_;
+  QueryState* query_state_;
 
   // RowBatch generation
   scoped_ptr<RowBatch> batch_;
@@ -215,7 +246,6 @@ class DataStreamTest : public testing::Test {
 
   // receiving node
   DataStreamMgr* stream_mgr_;
-  ThriftServer* server_;
 
   // sending node(s)
   TDataStreamSink broadcast_sink_;
@@ -263,6 +293,7 @@ class DataStreamTest : public testing::Test {
     TPlanFragmentDestination& dest = dest_.back();
     dest.fragment_instance_id = next_instance_id_;
     dest.server.hostname = "127.0.0.1";
+    dest.__set_data_svc(MakeNetworkAddress("127.0.0.1", FLAGS_port));
     dest.server.port = FLAGS_port;
     *instance_id = next_instance_id_;
     ++next_instance_id_.lo;
@@ -452,16 +483,17 @@ class DataStreamTest : public testing::Test {
 
   // Start backend in separate thread.
   void StartBackend() {
-    boost::shared_ptr<ImpalaTestBackend> handler(new ImpalaTestBackend(stream_mgr_));
-    boost::shared_ptr<TProcessor> processor(new ImpalaInternalServiceProcessor(handler));
-    server_ = new ThriftServer("DataStreamTest backend", processor, FLAGS_port, nullptr);
-    server_->Start();
+    RpcMgr* rpc_mgr = ExecEnv::GetInstance()->rpc_mgr();
+    rpc_mgr->Init(FLAGS_num_reactor_threads);
+    unique_ptr<ServiceIf> backend(new ImpalaTestBackend(
+        rpc_mgr->metric_entity(), rpc_mgr->result_tracker(), stream_mgr_));
+    rpc_mgr->RegisterService(8, 100, move(backend));
+    rpc_mgr->StartServices(FLAGS_port, 2);
   }
 
   void StopBackend() {
     VLOG_QUERY << "stop backend\n";
-    server_->StopForTesting();
-    delete server_;
+    ExecEnv::GetInstance()->rpc_mgr()->UnregisterServices();
   }
 
   void StartSender(TPartitionType::type partition_type = TPartitionType::UNPARTITIONED,
@@ -509,7 +541,8 @@ class DataStreamTest : public testing::Test {
       if (!info.status.ok()) break;
     }
     VLOG_QUERY << "closing sender" << sender_num;
-    sender.FlushFinal(&state);
+    Status flush_status = sender.FlushFinal(&state);
+    if (info.status.ok()) info.status = flush_status;
     sender.Close(&state);
     info.num_bytes_sent = sender.GetNumDataBytesSent();
 
@@ -542,6 +575,7 @@ TEST_F(DataStreamTest, UnknownSenderSmallResult) {
   // case 1: entire query result fits in single buffer
   TUniqueId dummy_id;
   GetNextInstanceId(&dummy_id);
+
   StartSender(TPartitionType::UNPARTITIONED, TOTAL_DATA_SIZE + 1024);
   JoinSenders();
   EXPECT_EQ(sender_info_[0].status.code(), TErrorCode::DATASTREAM_SENDER_TIMEOUT);
@@ -620,20 +654,17 @@ TEST_F(DataStreamTest, CloseRecvrWhileReferencesRemain) {
   // Send an eos RPC to the receiver. Not required for tear-down, but confirms that the
   // RPC does not cause an error (the receiver will still be called, since it is only
   // Close()'d, not deleted from the data stream manager).
-  Status rpc_status;
-  ImpalaBackendConnection client(exec_env_.impalad_client_cache(),
-      MakeNetworkAddress("localhost", FLAGS_port), &rpc_status);
-  EXPECT_OK(rpc_status);
-  TTransmitDataParams params;
-  params.protocol_version = ImpalaInternalServiceVersion::V1;
-  params.__set_eos(true);
-  params.__set_dest_fragment_instance_id(instance_id);
-  params.__set_dest_node_id(DEST_NODE_ID);
-  TUniqueId dummy_id;
-  params.__set_sender_id(0);
+  EndDataStreamRequestPb request;
+  request.mutable_dest_fragment_instance_id()->set_hi(instance_id.hi);
+  request.mutable_dest_fragment_instance_id()->set_lo(instance_id.lo);
+  request.set_dest_node_id(DEST_NODE_ID);
+  request.set_sender_id(0);
 
-  TTransmitDataResult result;
-  rpc_status = client.DoRpc(&ImpalaBackendClient::TransmitData, params, &result);
+  EndDataStreamResponsePb response;
+  TNetworkAddress remote;
+  EXPECT_OK(ResolveAddr(MakeNetworkAddress("localhost", FLAGS_port), &remote));
+  EXPECT_OK(Rpc<DataStreamServiceProxy>::Make(remote, ExecEnv::GetInstance()->rpc_mgr())
+                .Execute(&DataStreamServiceProxy::EndDataStream, request, &response));
 
   // Finally, stream_recvr destructor happens here. Before fix for IMPALA-2931, this
   // would have resulted in a crash.

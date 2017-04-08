@@ -22,6 +22,7 @@
 
 #include <boost/thread/mutex.hpp>
 #include <boost/bind/mem_fn.hpp>
+#include <utility>
 
 #include "util/aligned-new.h"
 #include "util/thread.h"
@@ -36,7 +37,7 @@ class ThreadPool : public CacheLineAligned {
   /// Signature of a work-processing function. Takes the integer id of the thread which is
   /// calling it (ids run from 0 to num_threads - 1) and a reference to the item to
   /// process.
-  typedef boost::function<void (int thread_id, const T& workitem)> WorkFunction;
+  typedef std::function<void (int thread_id, T&& workitem)> WorkFunction;
 
   /// Creates a new thread pool and start num_threads threads.
   ///  -- num_threads: how many threads are part of this pool
@@ -53,7 +54,7 @@ class ThreadPool : public CacheLineAligned {
       std::stringstream threadname;
       threadname << thread_prefix << "(" << i + 1 << ":" << num_threads << ")";
       threads_.AddThread(new Thread(group, threadname.str(),
-          boost::bind<void>(boost::mem_fn(&ThreadPool<T>::WorkerThread), this, i)));
+              [this, i] () { this->WorkerThread(i); }));
     }
   }
 
@@ -123,7 +124,7 @@ class ThreadPool : public CacheLineAligned {
     while (!IsShutdown()) {
       T workitem;
       if (work_queue_.BlockingGet(&workitem)) {
-        work_function_(thread_id, workitem);
+        work_function_(thread_id, std::move(workitem));
       }
       if (work_queue_.Size() == 0) {
         /// Take lock to ensure that DrainAndShutdown() cannot be between checking
@@ -162,16 +163,18 @@ class ThreadPool : public CacheLineAligned {
 };
 
 /// Utility thread-pool that accepts callable work items, and simply invokes them.
-class CallableThreadPool : public ThreadPool<boost::function<void()>> {
+class CallableThreadPool : public ThreadPool<std::function<void()>> {
  public:
+  using FunctionType = std::function<void()>;
+
   CallableThreadPool(const std::string& group, const std::string& thread_prefix,
       uint32_t num_threads, uint32_t queue_size) :
-      ThreadPool<boost::function<void()>>(
+      ThreadPool<FunctionType>(
           group, thread_prefix, num_threads, queue_size, &CallableThreadPool::Worker) {
   }
 
  private:
-  static void Worker(int thread_id, const boost::function<void()>& f) {
+  static void Worker(int thread_id, FunctionType&& f) {
     f();
   }
 };

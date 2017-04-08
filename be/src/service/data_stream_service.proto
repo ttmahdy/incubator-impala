@@ -1,0 +1,143 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+//
+
+// Any wrapped Thrift data structures can be found in
+// common/thrift/ImpalaInternalService.thrift.
+
+package impala;
+
+import "rpc/common.proto";
+
+// Serialized, self-contained version of a RowBatch (in be/src/runtime/row-batch.h).
+// All fields are required in V1.
+message RowBatchPb {
+  // total number of rows contained in this batch
+  optional int32 num_rows = 1;
+
+  // Tuple ids for the rows in this batch.
+  repeated int32 row_tuples = 2;
+
+  // Offset of tuple i into tuple_data. There are a total of num_rows * num_tuples_per_row
+  // offsets.
+  // An offset of -1 records a NULL.
+  //  repeated int32 tuple_offsets = 3;
+  required int32 tuple_offsets_sidecar_idx = 3;
+
+  // Index of the accompanying sidecar which contains serialized tuple data.
+  optional int32 tuple_data_sidecar_idx = 4;
+
+  // Size before any compression is applied.
+  optional int32 uncompressed_size = 5;
+
+  // Of type CatalogObjects.THdfsCompression (TODO(KRPC): native enum)
+  optional int32 compression_type = 6;
+}
+
+// All fields are required in V1.
+message TransmitDataRequestPb {
+  optional UniqueIdPb dest_fragment_instance_id = 1;
+
+  // Id of this fragment in its role as a sender.
+  optional int32 sender_id = 2;
+
+  optional int32 dest_node_id = 3;
+  optional RowBatchPb row_batch_header = 4;
+}
+
+// All fields are required in V1.
+message TransmitDataResponsePb {
+  optional StatusPb status = 1;
+}
+
+// All fields are required in V1.
+message EndDataStreamRequestPb {
+  optional UniqueIdPb dest_fragment_instance_id = 1;
+  optional int32 sender_id = 2;
+  optional int32 dest_node_id = 3;
+}
+
+message EndDataStreamResponsePb {
+
+}
+
+// All fields are required in V1.
+message BloomFilterPb {
+  // Log_2 of the heap space optional for this filter. See BloomFilter::BloomFilter() for
+  // details.
+  optional int32 log_heap_space = 1;
+
+  // List of buckets representing the Bloom Filter contents, laid out contiguously in one
+  // string for efficiency of (de)serialisation. See BloomFilter::Bucket and
+  // BloomFilter::directory_.
+  optional int32 directory_sidecar_idx = 2;
+
+  // If true, this filter allows all elements to pass (i.e. its selectivity is 1). If
+  // true, 'directory' and 'log_heap_space' are not meaningful.
+  optional bool always_true = 3;
+}
+
+// All fields are required in V1.
+message PublishFilterRequestPb {
+  // Filter ID, unique within a query.
+  optional int32 filter_id = 1;
+
+  // ID of fragment to receive this filter
+  // optional UniqueIdPb dst_instance_id = 2;
+
+  // Actual bloom_filter payload
+  optional BloomFilterPb bloom_filter = 3;
+
+  optional int32 fragment_idx = 4;
+
+  optional UniqueIdPb query_id = 5;
+}
+
+message PublishFilterResponsePb {}
+
+message UpdateFilterRequestPb {
+  // Filter ID, unique within a query.
+  optional int32 filter_id = 1;
+
+  // Query that this filter is for.
+  optional UniqueIdPb query_id = 2;
+  optional BloomFilterPb bloom_filter = 3;
+}
+
+message UpdateFilterResponsePb {}
+
+// Handles data transmission between fragment instances, and also between fragment
+// instances and the coordinator for filter aggregation.
+service DataStreamService {
+  // Called by sender to transmit single row batch. Returns error indication
+  // if params.fragmentId or params.destNodeId are unknown or if data couldn't
+  // be read.
+  rpc TransmitData(TransmitDataRequestPb) returns (TransmitDataResponsePb);
+
+  // Called by a sender to close the channel between fragment instances.
+  rpc EndDataStream(EndDataStreamRequestPb) returns (EndDataStreamResponsePb);
+
+  // Called by the coordinator to deliver global runtime filters to fragment
+  // instances for
+  // application at plan nodes.
+  rpc PublishFilter(PublishFilterRequestPb) returns (PublishFilterResponsePb);
+
+  // Called by fragment instances that produce local runtime filters to deliver
+  // them to
+  // the coordinator for aggregation and broadcast.
+  rpc UpdateFilter(UpdateFilterRequestPb) returns (UpdateFilterResponsePb);
+}

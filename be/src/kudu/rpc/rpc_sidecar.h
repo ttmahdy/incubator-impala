@@ -47,6 +47,7 @@ class RpcSidecar {
  public:
   static std::unique_ptr<RpcSidecar> FromFaststring(std::unique_ptr<faststring> data);
   static std::unique_ptr<RpcSidecar> FromSlice(Slice slice);
+  static std::unique_ptr<RpcSidecar> FromSharedPtr(std::shared_ptr<faststring> data);
 
   // Utility method to parse a series of sidecar slices into 'sidecars' from 'buffer' and
   // a set of offsets. 'sidecars' must have length >= TransferLimits::kMaxSidecars, and

@@ -371,6 +371,10 @@ struct TQueryCtx {
   // The pool to which this request has been submitted. Used to update pool statistics
   // for admission control.
   16: optional string request_pool
+
+  // The port on which the datastream service is run for the coordinator (for publishing
+  // global runtime filters).
+  17: optional i32 coord_data_svc_port
 }
 
 // Specification of one output destination of a plan fragment
@@ -380,6 +384,9 @@ struct TPlanFragmentDestination {
 
   // ... which is being executed on this server
   2: required Types.TNetworkAddress server
+
+  // Port of datastream service on the destination server.
+  3: optional Types.TNetworkAddress data_svc;
 }
 
 // Context to collect information, which is shared among all instances of that plan
@@ -603,34 +610,6 @@ struct TCancelQueryFInstancesResult {
   1: optional Status.TStatus status
 }
 
-
-// TransmitData
-
-struct TTransmitDataParams {
-  1: required ImpalaInternalServiceVersion protocol_version
-
-  // required in V1
-  2: optional Types.TUniqueId dest_fragment_instance_id
-
-  // Id of this fragment in its role as a sender.
-  3: optional i32 sender_id
-
-  // required in V1
-  4: optional Types.TPlanNodeId dest_node_id
-
-  // optional in V1
-  5: optional Results.TRowBatch row_batch
-
-  // if set to true, indicates that no more row batches will be sent
-  // for this dest_node_id
-  6: optional bool eos
-}
-
-struct TTransmitDataResult {
-  // required in V1
-  1: optional Status.TStatus status
-}
-
 // Parameters for RequestPoolService.resolveRequestPool()
 // TODO: why is this here?
 struct TResolveRequestPoolParams {
@@ -687,68 +666,6 @@ struct TPoolConfig {
   5: required string default_query_options;
 }
 
-struct TBloomFilter {
-  // Log_2 of the heap space required for this filter. See BloomFilter::BloomFilter() for
-  // details.
-  1: required i32 log_heap_space
-
-  // List of buckets representing the Bloom Filter contents, laid out contiguously in one
-  // string for efficiency of (de)serialisation. See BloomFilter::Bucket and
-  // BloomFilter::directory_.
-  2: binary directory
-
-  // If true, this filter allows all elements to pass (i.e. its selectivity is 1). If
-  // true, 'directory' and 'log_heap_space' are not meaningful.
-  4: required bool always_true
-}
-
-
-// UpdateFilter
-
-struct TUpdateFilterParams {
-  1: required ImpalaInternalServiceVersion protocol_version
-
-  // Filter ID, unique within a query.
-  // required in V1
-  2: optional i32 filter_id
-
-  // Query that this filter is for.
-  // required in V1
-  3: optional Types.TUniqueId query_id
-
-  // required in V1
-  4: optional TBloomFilter bloom_filter
-}
-
-struct TUpdateFilterResult {
-}
-
-
-// PublishFilter
-
-struct TPublishFilterParams {
-  1: required ImpalaInternalServiceVersion protocol_version
-
-  // Filter ID to update
-  // required in V1
-  2: optional i32 filter_id
-
-  // required in V1
-  3: optional Types.TUniqueId dst_query_id
-
-  // Index of fragment to receive this filter
-  // required in V1
-  4: optional Types.TFragmentIdx dst_fragment_idx
-
-  // Actual bloom_filter payload
-  // required in V1
-  5: optional TBloomFilter bloom_filter
-}
-
-struct TPublishFilterResult {
-}
-
-
 service ImpalaInternalService {
   // Called by coord to start asynchronous execution of a query's fragment instances in
   // backend.
@@ -764,16 +681,4 @@ service ImpalaInternalService {
   // Cancellation is asynchronous.
   TCancelQueryFInstancesResult CancelQueryFInstances(
       1:TCancelQueryFInstancesParams params);
-
-  // Called by sender to transmit single row batch. Returns error indication
-  // if params.fragmentId or params.destNodeId are unknown or if data couldn't be read.
-  TTransmitDataResult TransmitData(1:TTransmitDataParams params);
-
-  // Called by fragment instances that produce local runtime filters to deliver them to
-  // the coordinator for aggregation and broadcast.
-  TUpdateFilterResult UpdateFilter(1:TUpdateFilterParams params);
-
-  // Called by the coordinator to deliver global runtime filters to fragments for
-  // application at plan nodes.
-  TPublishFilterResult PublishFilter(1:TPublishFilterParams params);
 }

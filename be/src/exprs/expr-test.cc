@@ -66,6 +66,7 @@
 DECLARE_bool(abort_on_config_error);
 DECLARE_bool(disable_optimization_passes);
 DECLARE_bool(use_utc_for_unix_timestamp_conversions);
+DECLARE_int32(state_store_port);
 
 namespace posix_time = boost::posix_time;
 using boost::bad_lexical_cast;
@@ -7266,34 +7267,7 @@ TEST_F(ExprTest, UuidTest) {
 
 } // namespace impala
 
-int main(int argc, char **argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  InitCommonRuntime(argc, argv, true, TestInfo::BE_TEST);
-  ABORT_IF_ERROR(TimezoneDatabase::Initialize());
-  InitFeSupport(false);
-  impala::LlvmCodeGen::InitializeLlvm();
-
-  // Disable llvm optimization passes if the env var is no set to true. Running without
-  // the optimizations makes the tests run much faster.
-  char* optimizations = getenv("EXPR_TEST_ENABLE_OPTIMIZATIONS");
-  if (optimizations != NULL && strcmp(optimizations, "true") == 0) {
-    cout << "Running with optimization passes." << endl;
-    FLAGS_disable_optimization_passes = false;
-  } else {
-    cout << "Running without optimization passes." << endl;
-    FLAGS_disable_optimization_passes = true;
-  }
-
-  // Create an in-process Impala server and in-process backends for test environment
-  // without any startup validation check
-  FLAGS_abort_on_config_error = false;
-  VLOG_CONNECTION << "creating test env";
-  VLOG_CONNECTION << "starting backends";
-  InProcessImpalaServer* impala_server = InProcessImpalaServer::StartWithEphemeralPorts();
-  executor_ = new ImpaladQueryExecutor(impala_server->hostname(),
-      impala_server->beeswax_port());
-  ABORT_IF_ERROR(executor_->Setup());
-
+int RunTestConfigs() {
   // Disable FE expr rewrites to make sure the Exprs get executed exactly as specified
   // in the tests here.
   int ret;
@@ -7325,4 +7299,45 @@ int main(int argc, char **argv) {
   executor_->PushExecOption("DISABLE_CODEGEN=1");
   cout << endl << "Running without codegen and expr rewrites" << endl;
   return RUN_ALL_TESTS();
+}
+
+int main(int argc, char **argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  InitCommonRuntime(argc, argv, true, TestInfo::BE_TEST);
+  ABORT_IF_ERROR(TimezoneDatabase::Initialize());
+  InitFeSupport(false);
+  impala::LlvmCodeGen::InitializeLlvm();
+
+  // Disable llvm optimization passes if the env var is no set to true. Running without
+  // the optimizations makes the tests run much faster.
+  char* optimizations = getenv("EXPR_TEST_ENABLE_OPTIMIZATIONS");
+  if (optimizations != NULL && strcmp(optimizations, "true") == 0) {
+    cout << "Running with optimization passes." << endl;
+    FLAGS_disable_optimization_passes = false;
+  } else {
+    cout << "Running without optimization passes." << endl;
+    FLAGS_disable_optimization_passes = true;
+  }
+
+  // Create an in-process Impala server and in-process backends for test environment
+  // without any startup validation check
+  FLAGS_abort_on_config_error = false;
+  VLOG_CONNECTION << "creating test env";
+  VLOG_CONNECTION << "starting backends";
+  MetricGroup metrics("expr-test");
+  vector<int> used_ports;
+  FLAGS_state_store_port = FindUnusedEphemeralPort(&used_ports);
+  Statestore statestore(&metrics);
+  statestore.Start();
+  InProcessImpalaServer* impala_server =
+      InProcessImpalaServer::StartWithEphemeralPorts("localhost", FLAGS_state_store_port);
+  executor_ = new ImpaladQueryExecutor(impala_server->hostname(),
+      impala_server->beeswax_port());
+  ABORT_IF_ERROR(executor_->Setup());
+
+  int ret = RunTestConfigs();
+
+  statestore.SetExitFlag();
+  statestore.Join();
+  return ret;
 }

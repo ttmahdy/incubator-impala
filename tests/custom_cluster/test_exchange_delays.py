@@ -28,7 +28,7 @@ class TestExchangeDelays(CustomClusterTestSuite):
     return 'functional-query'
 
   @pytest.mark.execute_serially
-  @CustomClusterTestSuite.with_args("--stress_datastream_recvr_delay_ms=10000"
+  @CustomClusterTestSuite.with_args("--stress_datastream_recvr_delay_ms=30000"
         " --datastream_sender_timeout_ms=5000")
   def test_exchange_small_delay(self, vector):
     """Test delays in registering data stream receivers where the first one or two
@@ -39,7 +39,7 @@ class TestExchangeDelays(CustomClusterTestSuite):
     self.run_test_case('QueryTest/exchange-delays', vector)
 
   @pytest.mark.execute_serially
-  @CustomClusterTestSuite.with_args("--stress_datastream_recvr_delay_ms=10000"
+  @CustomClusterTestSuite.with_args("--stress_datastream_recvr_delay_ms=30000"
         " --datastream_sender_timeout_ms=1")
   def test_exchange_large_delay(self, vector):
     """Test delays in registering data stream receivers where all of the batches sent

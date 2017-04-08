@@ -81,11 +81,10 @@ class TestSubscriber : public StatestoreSubscriberIf {
     context->RespondSuccess();
   }
 
-  typedef std::function<void(
-      TestSubscriber*, THeartbeatRequest*, THeartbeatResponse* response)>
-      HeartbeatCallback;
-  typedef std::function<void(
-      TestSubscriber*, TUpdateStateRequest*, TUpdateStateResponse* response)>
+  typedef std::function<void(TestSubscriber*, THeartbeatRequest*, THeartbeatResponse*)>
+  HeartbeatCallback;
+  typedef std::function<
+    void(TestSubscriber*, TUpdateStateRequest*, TUpdateStateResponse*)>
       UpdateStateCallback;
 
   void SetHeartbeatCallback(const HeartbeatCallback& cb) { heartbeat_cb_ = cb; }
@@ -99,10 +98,9 @@ class TestSubscriber : public StatestoreSubscriberIf {
     request.__set_topic_registrations(topics);
 
     TRegisterSubscriberResponse response;
-    RETURN_IF_ERROR(
-        Rpc<StatestoreServiceProxy>::Make(statestore_address_, rpc_mgr_)
-            .ExecuteWithThriftArgs(
-                &StatestoreServiceProxy::RegisterSubscriber, &request, &response));
+    RETURN_IF_ERROR(Rpc<StatestoreServiceProxy>::Make(statestore_address_, rpc_mgr_)
+        .ExecuteWithThriftArgs(
+            &StatestoreServiceProxy::RegisterSubscriber, &request, &response));
 
     registration_id_ = response.registration_id;
     return Status::OK();
@@ -159,18 +157,22 @@ class StatestoreTest : public testing::Test {
   unique_ptr<Webserver> webserver_;
   vector<TestSubscriber*> subscribers_;
   vector<unique_ptr<RpcMgr>> rpc_mgrs_;
+  TNetworkAddress resolved_localhost_;
 
   virtual void SetUp() {
     // Speed up test execution by sending messages very frequently.
     FLAGS_statestore_heartbeat_frequency_ms = 25;
     FLAGS_statestore_update_frequency_ms = 25;
-    FLAGS_state_store_port = FindUnusedEphemeralPort();
+    FLAGS_state_store_port = FindUnusedEphemeralPort(nullptr);
     ASSERT_NE(-1, FLAGS_state_store_port);
+
+    ASSERT_OK(ResolveAddr(
+        MakeNetworkAddress("localhost", FLAGS_state_store_port), &resolved_localhost_));
 
     // Reduce timeout for heartbeats
     FLAGS_statestore_heartbeat_tcp_timeout_seconds = 1;
 
-    int webserver_port = FindUnusedEphemeralPort();
+    int webserver_port = FindUnusedEphemeralPort(nullptr);
     ASSERT_NE(-1, webserver_port);
     metrics_.reset(new MetricGroup("foo"));
     webserver_.reset(new Webserver(webserver_port));
@@ -186,11 +188,11 @@ class StatestoreTest : public testing::Test {
     for (int i = 0; i < count; ++i) {
       rpc_mgrs_.push_back(make_unique<RpcMgr>());
       ASSERT_OK(rpc_mgrs_.back()->Init(1));
-      int port = FindUnusedEphemeralPort();
+      int port = FindUnusedEphemeralPort(nullptr);
       ASSERT_NE(-1, port) << "Could not find unused ephemeral port!";
-      unique_ptr<TestSubscriber> subscriber =
-          make_unique<TestSubscriber>(rpc_mgrs_.back().get(),
-              MakeNetworkAddress("localhost", FLAGS_state_store_port), port);
+      unique_ptr<TestSubscriber> subscriber = make_unique<TestSubscriber>(
+          rpc_mgrs_.back().get(), MakeNetworkAddress("127.0.0.1", FLAGS_state_store_port),
+          port);
       subscribers_.push_back(subscriber.get());
       ASSERT_OK(subscribers_.back()->rpc_mgr()->RegisterService(2, 10, move(subscriber)));
       ASSERT_OK(subscribers_.back()->rpc_mgr()->StartServices(port, 1));
@@ -220,8 +222,8 @@ TEST_F(StatestoreTest, SmokeTest) {
   RpcMgr rpc_mgr;
   rpc_mgr.Init(1);
   StatestoreSubscriber sub_will_start("sub1",
-      MakeNetworkAddress("localhost", FLAGS_state_store_port + 10),
-      MakeNetworkAddress("localhost", FLAGS_state_store_port), &rpc_mgr, metrics_.get());
+      MakeNetworkAddress(resolved_localhost_.hostname, FLAGS_state_store_port + 10),
+      resolved_localhost_, &rpc_mgr, metrics_.get());
 
   ASSERT_OK(sub_will_start.Start());
   ASSERT_OK(rpc_mgr.StartServices(FLAGS_state_store_port + 10, 2));

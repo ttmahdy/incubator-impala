@@ -83,6 +83,8 @@ DEFINE_int64(pause_monitor_warn_threshold_ms, 10000, "If the pause monitor sleep
 DEFINE_string(local_library_dir, "/tmp",
     "Scratch space for local fs operations. Currently used for copying "
     "UDF binaries locally from HDFS and also for initializing the timezone db");
+DEFINE_bool_hidden(dcheck_on_startup, false, "For debugging only. If true, a debug build"
+    " will crash on start-up");
 
 // Defined by glog. This allows users to specify the log level using a glob. For
 // example -vmodule=*scanner*=3 would enable full logging for scanners. If redaction
@@ -246,4 +248,6 @@ void impala::InitCommonRuntime(int argc, char** argv, bool init_jvm,
     HeapProfilerStart(FLAGS_heap_profile_dir.c_str());
   }
 #endif
+
+  DCHECK(!FLAGS_dcheck_on_startup);
 }

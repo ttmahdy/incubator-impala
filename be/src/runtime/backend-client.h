@@ -32,12 +32,12 @@ namespace impala {
 class ImpalaBackendClient : public ImpalaInternalServiceClient {
  public:
   ImpalaBackendClient(boost::shared_ptr< ::apache::thrift::protocol::TProtocol> prot)
-    : ImpalaInternalServiceClient(prot), transmit_csw_(NULL) {
+    : ImpalaInternalServiceClient(prot) {
   }
 
   ImpalaBackendClient(boost::shared_ptr< ::apache::thrift::protocol::TProtocol> iprot,
       boost::shared_ptr< ::apache::thrift::protocol::TProtocol> oprot)
-    : ImpalaInternalServiceClient(iprot, oprot), transmit_csw_(NULL) {
+    : ImpalaInternalServiceClient(iprot, oprot) {
   }
 
 /// We intentionally disable this clang warning as we intend to hide the
@@ -75,54 +75,8 @@ class ImpalaBackendClient : public ImpalaInternalServiceClient {
     ImpalaInternalServiceClient::recv_CancelQueryFInstances(_return);
   }
 
-  void TransmitData(TTransmitDataResult& _return, const TTransmitDataParams& params,
-      bool* send_done) {
-    DCHECK(!*send_done);
-    FAULT_INJECTION_SEND_RPC_EXCEPTION(1024);
-    if (transmit_csw_ != NULL) {
-      SCOPED_CONCURRENT_COUNTER(transmit_csw_);
-      ImpalaInternalServiceClient::send_TransmitData(params);
-    } else {
-      ImpalaInternalServiceClient::send_TransmitData(params);
-    }
-    *send_done = true;
-    FAULT_INJECTION_RECV_RPC_EXCEPTION(1024);
-    ImpalaInternalServiceClient::recv_TransmitData(_return);
-  }
-
-  /// Callers of TransmitData() should provide their own counter to measure the data
-  /// transmission time.
-  void SetTransmitDataCounter(RuntimeProfile::ConcurrentTimerCounter* csw) {
-    DCHECK(transmit_csw_ == NULL);
-    transmit_csw_ = csw;
-  }
-
-  /// ImpalaBackendClient is shared by multiple queries. It's the caller's responsibility
-  /// to reset the counter after data transmission.
-  void ResetTransmitDataCounter() {
-    transmit_csw_ = NULL;
-  }
-
-  void UpdateFilter(TUpdateFilterResult& _return, const TUpdateFilterParams& params,
-      bool* send_done) {
-    DCHECK(!*send_done);
-    ImpalaInternalServiceClient::send_UpdateFilter(params);
-    *send_done = true;
-    ImpalaInternalServiceClient::recv_UpdateFilter(_return);
-  }
-
-  void PublishFilter(TPublishFilterResult& _return, const TPublishFilterParams& params,
-      bool* send_done) {
-    DCHECK(!*send_done);
-    ImpalaInternalServiceClient::send_PublishFilter(params);
-    *send_done = true;
-    ImpalaInternalServiceClient::recv_PublishFilter(_return);
-  }
-
 #pragma clang diagnostic pop
 
- private:
-  RuntimeProfile::ConcurrentTimerCounter* transmit_csw_;
 };
 
 }

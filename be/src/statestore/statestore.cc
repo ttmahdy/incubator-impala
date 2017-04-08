@@ -248,11 +248,15 @@ Statestore::Statestore(MetricGroup* metrics)
   : exit_flag_(false),
     subscriber_topic_update_threadpool_("statestore-update", "subscriber-update-worker",
         FLAGS_statestore_num_update_threads, STATESTORE_MAX_SUBSCRIBERS,
-        bind<void>(mem_fn(&Statestore::DoSubscriberUpdate), this, false, _1, _2)),
+        [this](int thread_id, ScheduledSubscriberUpdate&& work) {
+          this->DoSubscriberUpdate(false, thread_id, move(work));
+        }),
     subscriber_heartbeat_threadpool_("statestore-heartbeat",
         "subscriber-heartbeat-worker", FLAGS_statestore_num_heartbeat_threads,
         STATESTORE_MAX_SUBSCRIBERS,
-        bind<void>(mem_fn(&Statestore::DoSubscriberUpdate), this, true, _1, _2)),
+        [this](int thread_id, ScheduledSubscriberUpdate&& work) {
+          this->DoSubscriberUpdate(true, thread_id, move(work));
+        }),
     failure_detector_(
         new MissedHeartbeatFailureDetector(FLAGS_statestore_max_missed_heartbeats,
             FLAGS_statestore_max_missed_heartbeats / 2)) {
@@ -382,6 +386,9 @@ Status Statestore::RegisterSubscriber(const SubscriberId& subscriber_id,
     const vector<TTopicRegistration>& topic_registrations, TUniqueId* registration_id) {
   if (subscriber_id.empty()) return Status("Subscriber ID cannot be empty string");
 
+  TNetworkAddress resolved_address;
+  RETURN_IF_ERROR(ResolveAddr(location, &resolved_address));
+
   // Create any new topics first, so that when the subscriber is first sent a topic update
   // by the worker threads its topics are guaranteed to exist.
   {
@@ -405,8 +412,8 @@ Status Statestore::RegisterSubscriber(const SubscriberId& subscriber_id,
     }
 
     UUIDToTUniqueId(subscriber_uuid_generator_(), registration_id);
-    shared_ptr<Subscriber> current_registration(
-        new Subscriber(subscriber_id, *registration_id, location, topic_registrations));
+    shared_ptr<Subscriber> current_registration(new Subscriber(
+            subscriber_id, *registration_id, resolved_address, topic_registrations));
     subscribers_.insert(make_pair(subscriber_id, current_registration));
     failure_detector_->UpdateHeartbeat(
         PrintId(current_registration->registration_id()), true);

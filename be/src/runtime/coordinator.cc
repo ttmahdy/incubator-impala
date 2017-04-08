@@ -47,8 +47,9 @@
 #include "gen-cpp/ImpalaInternalService_types.h"
 #include "gen-cpp/Partitions_types.h"
 #include "gen-cpp/PlanNodes_types.h"
-#include "runtime/backend-client.h"
 #include "runtime/client-cache.h"
+#include "rpc/rpc.h"
+#include "rpc/thrift-util.h"
 #include "runtime/data-stream-mgr.h"
 #include "runtime/data-stream-sender.h"
 #include "runtime/exec-env.h"
@@ -64,6 +65,7 @@
 #include "runtime/debug-options.h"
 #include "runtime/query-state.h"
 #include "scheduling/scheduler.h"
+#include "service/data_stream_service.proxy.h"
 #include "util/bloom-filter.h"
 #include "util/container-util.h"
 #include "util/counting-barrier.h"
@@ -89,11 +91,16 @@ using boost::algorithm::split;
 using boost::filesystem::path;
 using std::unique_ptr;
 
-DECLARE_int32(be_port);
+using kudu::MonoDelta;
+using kudu::rpc::RpcController;
+
 DECLARE_string(hostname);
 
 DEFINE_bool(insert_inherit_permissions, false, "If true, new directories created by "
     "INSERTs will inherit the permissions of their parent directories");
+
+DEFINE_int32(rpc_publish_filter_timeout_ms, 10000,
+    "Timeout for runtime filter publication RPCs");
 
 namespace impala {
 
@@ -250,7 +257,8 @@ void Coordinator::InitBackendStates() {
 
   // create BackendStates
   bool has_coord_fragment = schedule_.GetCoordFragment() != nullptr;
-  const TNetworkAddress& coord_address = ExecEnv::GetInstance()->backend_address();
+  const TNetworkAddress& coord_address =
+      ExecEnv::GetInstance()->resolved_backend_address();
   int backend_idx = 0;
   for (const auto& entry: backend_params_map) {
     if (has_coord_fragment && coord_address == entry.first) {
@@ -1097,20 +1105,21 @@ void Coordinator::ReleaseResources() {
       FilterState* state = &filter.second;
       state->Disable(filter_mem_tracker_.get());
     }
+
+    // This may be NULL while executing UDFs.
+    if (filter_mem_tracker_.get() != nullptr) {
+      // TODO: move this elsewhere, this isn't releasing resources (it's dismantling
+      // control structures)
+      filter_mem_tracker_->UnregisterFromParent();
+      filter_mem_tracker_.reset();
+    }
   }
-  // This may be NULL while executing UDFs.
-  if (filter_mem_tracker_.get() != nullptr) {
-    // TODO: move this elsewhere, this isn't releasing resources (it's dismantling
-    // control structures)
-    filter_mem_tracker_->UnregisterFromParent();
-  }
+
   // Need to protect against failed Prepare(), where root_sink() would not be set.
-  if (coord_sink_ != nullptr) {
-    coord_sink_->CloseConsumer();
-  }
+  if (coord_sink_ != nullptr) coord_sink_->CloseConsumer();
 }
 
-void Coordinator::UpdateFilter(const TUpdateFilterParams& params) {
+void Coordinator::UpdateFilter(int32_t filter_id, const ProtoBloomFilter& params) {
   DCHECK_NE(filter_mode_, TRuntimeFilterMode::OFF)
       << "UpdateFilter() called although runtime filters are disabled";
   DCHECK(exec_complete_barrier_.get() != nullptr)
@@ -1119,14 +1128,15 @@ void Coordinator::UpdateFilter(const TUpdateFilterParams& params) {
   DCHECK(filter_routing_table_complete_)
       << "Filter received before routing table complete";
 
-  // Make a 'master' copy that will be shared by all concurrent delivery RPC attempts.
-  shared_ptr<TPublishFilterParams> rpc_params(new TPublishFilterParams());
-  unordered_set<int> target_fragment_idxs;
+  /// Payload that is shared amongst all filter targets. When the last RPC completes, this
+  /// is destroyed.
+  shared_ptr<ProtoBloomFilter> proto_filter;
+  unordered_set<int> target_fragment_instance_state_idxs;
   {
     lock_guard<SpinLock> l(filter_lock_);
-    FilterRoutingTable::iterator it = filter_routing_table_.find(params.filter_id);
+    FilterRoutingTable::iterator it = filter_routing_table_.find(filter_id);
     if (it == filter_routing_table_.end()) {
-      LOG(INFO) << "Could not find filter with id: " << params.filter_id;
+      LOG(INFO) << "Could not find filter with id: " << filter_id;
       return;
     }
     FilterState* state = &it->second;
@@ -1153,46 +1163,35 @@ void Coordinator::UpdateFilter(const TUpdateFilterParams& params) {
     // At this point, we either disabled this filter or aggregation is complete.
     DCHECK(state->disabled() || state->pending_count() == 0);
 
-    // No more updates are pending on this filter ID. Create a distribution payload and
-    // offer it to the queue.
+    // No more updates are pending on this filter ID. Publish the filter.
     for (const FilterTarget& target: *state->targets()) {
       // Don't publish the filter to targets that are in the same fragment as the join
       // that produced it.
       if (target.is_local) continue;
-      target_fragment_idxs.insert(target.fragment_idx);
+      target_fragment_instance_state_idxs.insert(target.fragment_idx);
     }
 
     // Assign outgoing bloom filter.
     if (state->bloom_filter() != nullptr) {
       // Complete filter case.
-      // TODO: Replace with move() in Thrift 0.9.3.
-      TBloomFilter* aggregated_filter = state->bloom_filter();
-      filter_mem_tracker_->Release(aggregated_filter->directory.size());
-      swap(rpc_params->bloom_filter, *aggregated_filter);
-      DCHECK_EQ(aggregated_filter->directory.size(), 0);
+      proto_filter.reset(state->Release(filter_mem_tracker_.get()));
     } else {
       // Disabled filter case (due to OOM or due to receiving an always_true filter).
-      rpc_params->bloom_filter.always_true = true;
+      proto_filter = nullptr;
+      state->Disable(filter_mem_tracker_.get());
     }
-
-    // Filter is complete, and can be released.
-    state->Disable(filter_mem_tracker_.get());
     DCHECK(state->bloom_filter() == nullptr);
   }
 
-  rpc_params->__set_dst_query_id(query_id());
-  rpc_params->__set_filter_id(params.filter_id);
-
   for (BackendState* bs: backend_states_) {
-    for (int fragment_idx: target_fragment_idxs) {
-      rpc_params->__set_dst_fragment_idx(fragment_idx);
-      bs->PublishFilter(rpc_params);
+    for (int fragment_idx: target_fragment_instance_state_idxs) {
+      bs->PublishFilter(fragment_idx, filter_id, proto_filter);
     }
   }
 }
 
-void Coordinator::FilterState::ApplyUpdate(const TUpdateFilterParams& params,
-    Coordinator* coord) {
+void Coordinator::FilterState::ApplyUpdate(
+    const ProtoBloomFilter& params, Coordinator* coord) {
   DCHECK_GT(pending_count_, 0);
   DCHECK_EQ(completion_time_, 0L);
   if (first_arrival_time_ == 0L) {
@@ -1200,10 +1199,10 @@ void Coordinator::FilterState::ApplyUpdate(const TUpdateFilterParams& params,
   }
 
   --pending_count_;
-  if (params.bloom_filter.always_true) {
+  if (params.header.always_true()) {
     Disable(coord->filter_mem_tracker_.get());
   } else if (bloom_filter_.get() == nullptr) {
-    int64_t heap_space = params.bloom_filter.directory.size();
+    int64_t heap_space = params.directory.size();
     if (!coord->filter_mem_tracker_.get()->TryConsume(heap_space)) {
       VLOG_QUERY << "Not enough memory to allocate filter: "
                  << PrettyPrinter::Print(heap_space, TUnit::BYTES)
@@ -1211,18 +1210,14 @@ void Coordinator::FilterState::ApplyUpdate(const TUpdateFilterParams& params,
       // Disable, as one missing update means a correct filter cannot be produced.
       Disable(coord->filter_mem_tracker_.get());
     } else {
-      bloom_filter_.reset(new TBloomFilter());
-      // Workaround for fact that parameters are const& for Thrift RPCs - yet we want to
-      // move the payload from the request rather than copy it and take double the memory
-      // cost. After this point, params.bloom_filter is an empty filter and should not be
-      // read.
-      TBloomFilter* non_const_filter =
-          &const_cast<TBloomFilter&>(params.bloom_filter);
-      swap(*bloom_filter_.get(), *non_const_filter);
-      DCHECK_EQ(non_const_filter->directory.size(), 0);
+      // Do an explicit copy of the directory: 'params' may have come from an RPC so we
+      // can't assume ownership of its directory.
+      bloom_filter_ =
+          make_unique<ProtoBloomFilter>(params.header, params.directory);
+      DCHECK(bloom_filter_->directory.size() > 0 );
     }
   } else {
-    BloomFilter::Or(params.bloom_filter, bloom_filter_.get());
+    BloomFilter::Or(params, bloom_filter_.get());
   }
 
   if (pending_count_ == 0 || disabled_) {
@@ -1236,6 +1231,14 @@ void Coordinator::FilterState::Disable(MemTracker* tracker) {
   int64_t heap_space = bloom_filter_.get()->directory.size();
   tracker->Release(heap_space);
   bloom_filter_.reset();
+}
+
+ProtoBloomFilter* Coordinator::FilterState::Release(MemTracker* tracker) {
+  disabled_ = true;
+  if (bloom_filter_.get() == nullptr) return nullptr;
+  int64_t heap_space = bloom_filter_.get()->directory.size();
+  tracker->Release(heap_space);
+  return bloom_filter_.release();
 }
 
 const TUniqueId& Coordinator::query_id() const {

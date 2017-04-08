@@ -34,12 +34,10 @@ template <typename P>
 Status RpcMgr::GetProxy(const TNetworkAddress& address, std::unique_ptr<P>* proxy) {
   DCHECK(proxy != nullptr);
   DCHECK(is_inited()) << "Must call Init() before GetProxy()";
-  std::vector<kudu::Sockaddr> addresses;
-  KUDU_RETURN_IF_ERROR(
-      kudu::HostPort(address.hostname, address.port).ResolveAddresses(&addresses),
-      "Couldn't resolve addresses");
-  DCHECK_GT(addresses.size(), 0);
-  proxy->reset(new P(messenger_, addresses[0]));
+  kudu::Sockaddr addr;
+  KUDU_RETURN_IF_ERROR(addr.ParseString(address.hostname, address.port),
+      "Couldn't parse resolved address");
+  proxy->reset(new P(messenger_, addr));
   return Status::OK();
 }
 }

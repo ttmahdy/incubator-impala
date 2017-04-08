@@ -34,6 +34,13 @@ typedef std::string IpAddr;
 /// otherwise OK. Even if OK is returned, addresses may still be of zero length.
 Status HostnameToIpAddr(const Hostname& hostname, IpAddr* ip);
 
+/// Returns true if 'addr' is a fully resolved IP address, rather than a fqdn + port.
+bool IsResolvedAddress(const TNetworkAddress& addr);
+
+/// Resolves 'addr' to an IP address, and puts the result in *output. Returns !ok() if
+/// there was some error performing the lookup.
+Status ResolveAddr(const TNetworkAddress& addr, TNetworkAddress* output);
+
 /// Finds the first non-localhost IP address in the given list. Returns
 /// true if such an address was found, false otherwise.
 bool FindFirstNonLocalhost(const std::vector<std::string>& addresses, std::string* addr);
@@ -50,10 +57,6 @@ TNetworkAddress MakeNetworkAddress(const std::string& hostname, int port);
 /// If the given string address is malformed, returns a network address with an empty
 /// hostname and a port of 0.
 TNetworkAddress MakeNetworkAddress(const std::string& address);
-
-/// Utility method because Thrift does not supply useful constructors
-TBackendDescriptor MakeBackendDescriptor(const Hostname& hostname, const IpAddr& ip,
-    int port);
 
 /// Returns true if the ip address parameter is the wildcard interface (0.0.0.0)
 bool IsWildcardAddress(const std::string& ipaddress);

@@ -35,15 +35,41 @@ using namespace impala;
 DECLARE_int32(idle_session_timeout);
 DECLARE_int32(be_port);
 DECLARE_int32(beeswax_port);
+DECLARE_int32(state_store_port);
 
 // TODO: When sleep(..) queries can be cancelled, write a test that confirms long-running
 // queries are cancelled during session expiry.
 // TODO: Come up with a short-running test that confirms a session will keep itself alive
 // that doesn't depend upon being rescheduled in a timely fashion.
 
-TEST(SessionTest, TestExpiry) {
+class SessionTest : public testing::Test {
+ protected:
+  unique_ptr<Statestore> statestore_;
+  unique_ptr<MetricGroup> metrics_;
+  InProcessImpalaServer* impala;
+
+  virtual void SetUp() {
+    FLAGS_state_store_port = FindUnusedEphemeralPort(nullptr);
+    ASSERT_NE(-1, FLAGS_state_store_port);
+    metrics_.reset(new MetricGroup("SessionTest"));
+    statestore_.reset(new Statestore(metrics_.get()));
+    statestore_->Start();
+
+    impala =
+        InProcessImpalaServer::StartWithEphemeralPorts("localhost", FLAGS_state_store_port);
+  }
+
+  virtual void TearDown() {
+    impala->Shutdown();
+    impala->Join();
+    statestore_->SetExitFlag();
+    statestore_->Join();
+  }
+};
+
+TEST_F(SessionTest, TestExpiry) {
   FLAGS_idle_session_timeout = 1;
-  InProcessImpalaServer* impala = InProcessImpalaServer::StartWithEphemeralPorts();
+
   IntCounter* expired_metric =
       impala->metrics()->FindMetricForTesting<IntCounter>(
           ImpaladMetricKeys::NUM_SESSIONS_EXPIRED);
