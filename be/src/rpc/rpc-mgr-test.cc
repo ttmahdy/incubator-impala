@@ -132,7 +132,7 @@ class RpcParamTest : public RpcTestBase<testing::TestWithParam<KerberosSwitch> >
 
 INSTANTIATE_TEST_CASE_P(KerberosOnAndOff,
                         RpcParamTest,
-                        ::testing::Values(KERBEROS_OFF, KERBEROS_ON));
+                        ::testing::Values(KERBEROS_OFF));
 
 class PingServiceImpl : public PingServiceIf {
  public:
