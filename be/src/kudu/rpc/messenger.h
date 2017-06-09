@@ -227,7 +227,8 @@ class Messenger {
   RpcAuthentication authentication() const { return authentication_; }
   RpcEncryption encryption() const { return encryption_; }
 
-  ThreadPool* negotiation_pool() const { return negotiation_pool_.get(); }
+  ThreadPool* client_negotiation_pool() const { return client_negotiation_pool_.get(); }
+  ThreadPool* server_negotiation_pool() const { return server_negotiation_pool_.get(); }
 
   RpczStore* rpcz_store() { return rpcz_store_.get(); }
 
@@ -287,7 +288,8 @@ class Messenger {
 
   std::vector<Reactor*> reactors_;
 
-  gscoped_ptr<ThreadPool> negotiation_pool_;
+  gscoped_ptr<ThreadPool> client_negotiation_pool_;
+  gscoped_ptr<ThreadPool> server_negotiation_pool_;
 
   std::unique_ptr<security::TlsContext> tls_context_;
 

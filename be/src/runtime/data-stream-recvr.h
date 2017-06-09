@@ -165,10 +165,6 @@ class DataStreamRecvr {
   /// Number of bytes received
   RuntimeProfile::Counter* bytes_received_counter_;
 
-  /// Number of bytes received in accepted batches. Ratio of this to
-  /// 'bytes_received_counter_' measures goodput of senders.
-  RuntimeProfile::Counter* bytes_accepted_counter_;
-
   /// Time series of number of bytes received, samples bytes_received_counter_
   RuntimeProfile::TimeSeriesCounter* bytes_received_time_series_counter_;
 

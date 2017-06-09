@@ -186,7 +186,6 @@ void DataStreamRecvr::SenderQueue::AddBatch(unique_ptr<TransmitDataCtx>&& payloa
   int batch_size = payload->proto_batch.GetSize();
   {
     unique_lock<SpinLock> l(lock_);
-    COUNTER_ADD(recvr_->bytes_received_counter_, batch_size);
 
     // num_remaining_senders_ could be 0 because an AddBatch() can arrive *after* a
     // EndDataStream() RPC for the same sender, due to asynchrony on the sender side (the
@@ -214,7 +213,7 @@ void DataStreamRecvr::SenderQueue::AddBatch(unique_ptr<TransmitDataCtx>&& payloa
       return;
     }
     COUNTER_ADD(recvr_->num_accepted_batches_, 1);
-    COUNTER_ADD(recvr_->bytes_accepted_counter_, batch_size);
+    COUNTER_ADD(recvr_->bytes_received_counter_, batch_size);
     recvr_->num_buffered_bytes_.Add(batch_size);
   }
 
@@ -344,8 +343,6 @@ DataStreamRecvr::DataStreamRecvr(DataStreamMgr* stream_mgr, MemTracker* parent_t
   // Initialize the counters
   bytes_received_counter_ =
       ADD_COUNTER(recvr_side_profile, "TotalBytesReceived", TUnit::BYTES);
-  bytes_accepted_counter_ =
-      ADD_COUNTER(recvr_side_profile, "AcceptedBytesReceived", TUnit::BYTES);
   bytes_received_time_series_counter_ = ADD_TIME_SERIES_COUNTER(
       recvr_side_profile, "BytesReceived", bytes_received_counter_);
   deserialize_row_batch_timer_ =

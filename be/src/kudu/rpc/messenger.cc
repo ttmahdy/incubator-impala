@@ -311,10 +311,11 @@ void Messenger::Shutdown() {
   }
   acceptor_pools_.clear();
 
-  // Need to shut down negotiation pool before the reactors, since the
+  // Need to shut down negotiation pools before the reactors, since the
   // reactors close the Connection sockets, and may race against the negotiation
   // threads' blocking reads & writes.
-  negotiation_pool_->Shutdown();
+  client_negotiation_pool_->Shutdown();
+  server_negotiation_pool_->Shutdown();
 
   for (Reactor* reactor : reactors_) {
     reactor->Shutdown();
@@ -416,10 +417,14 @@ Messenger::Messenger(const MessengerBuilder &bld)
   for (int i = 0; i < bld.num_reactors_; i++) {
     reactors_.push_back(new Reactor(retain_self_, i, bld));
   }
-  CHECK_OK(ThreadPoolBuilder("negotiator")
+  CHECK_OK(ThreadPoolBuilder("client-negotiator")
               .set_min_threads(bld.min_negotiation_threads_)
               .set_max_threads(bld.max_negotiation_threads_)
-              .Build(&negotiation_pool_));
+              .Build(&client_negotiation_pool_));
+  CHECK_OK(ThreadPoolBuilder("server-negotiator")
+      .set_min_threads(bld.min_negotiation_threads_)
+      .set_max_threads(bld.max_negotiation_threads_)
+      .Build(&server_negotiation_pool_));
 }
 
 Messenger::~Messenger() {
