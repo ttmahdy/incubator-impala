@@ -129,6 +129,7 @@ message(STATUS "Boost include dir: " ${Boost_INCLUDE_DIRS})
 message(STATUS "Boost libraries: " ${Boost_LIBRARIES})
 
 find_package(OpenSSL 1.0.1 QUIET)
+set(OPENSSL_STATIC_LINKING ON)
 if (NOT ${OPENSSL_FOUND})
   set(OPENSSL_FOUND ON)
   set(OPENSSL_STATIC_LINKING ON)
