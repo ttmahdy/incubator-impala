@@ -75,10 +75,10 @@ set(SECURITY_LIBS
   gutil
   kudu_util
   token_proto
-
   krb5
   openssl_crypto
-  openssl_ssl)
+  openssl_ssl
+  openssl_crypto)
 
 ADD_EXPORTABLE_LIBRARY(security
   SRCS ${SECURITY_SRCS}
