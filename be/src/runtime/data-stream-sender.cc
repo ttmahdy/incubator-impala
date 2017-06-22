@@ -144,7 +144,7 @@ class DataStreamSender::Channel :
   /// correctly return the same shared_ptr, which in turn enables the use of
   /// weak_ptr(self_) in the TransmitDat() RPC completion callback. Set in Init(), and
   /// reset in ReleaseResources().
-  shared_ptr<DataStreamSender::Channel> self_ = shared_from_this();
+  shared_ptr<DataStreamSender::Channel> self_;
 
   // Lock with rpc_done_cv_. Protects remaining members.
   SpinLock lock_;
@@ -166,6 +166,7 @@ Status DataStreamSender::Channel::Init() {
   // TODO: figure out how to size batch_
   int capacity = max(1, buffer_size_ / max(row_desc_->GetRowSize(), 1));
   batch_.reset(new RowBatch(row_desc_, capacity, parent_->mem_tracker()));
+  self_ = shared_from_this();
   return Status::OK();
 }
 
