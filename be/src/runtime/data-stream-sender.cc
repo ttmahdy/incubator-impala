@@ -506,11 +506,15 @@ Status DataStreamSender::SerializeBatch(
     SCOPED_TIMER(serialize_batch_timer_);
     RETURN_IF_ERROR(src->Serialize(dest));
     int bytes = dest->GetSize();
-    int uncompressed_bytes =
-        bytes - dest->tuple_data->length() + dest->header.uncompressed_size();
-    // The size output_batch would be if we didn't compress tuple_data (will be equal to
-    // actual batch size if tuple_data isn't compressed)
-
+    int uncompressed_bytes;
+    if (dest->header.compression_type() == THdfsCompression::LZ4) {
+      uncompressed_bytes =
+         bytes - dest->compressed_tuple_data->length() + dest->header.uncompressed_size();
+    } else{
+      // The size output_batch would be if we didn't compress tuple_data (will be equal to
+      // actual batch size if tuple_data isn't compressed)
+      uncompressed_bytes = bytes;
+    }
     COUNTER_ADD(bytes_sent_counter_, bytes * num_receivers);
     COUNTER_ADD(uncompressed_bytes_counter_, uncompressed_bytes * num_receivers);
   }
