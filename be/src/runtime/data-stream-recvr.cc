@@ -193,6 +193,7 @@ void DataStreamRecvr::SenderQueue::AddBatch(unique_ptr<TransmitDataCtx>&& payloa
     // to complete before trying to close the channel).
     if (is_cancelled_ || num_remaining_senders_ == 0) {
       Status::OK().ToProto(payload->response->mutable_status());
+      lock_.unlock();
       payload->context->RespondSuccess();
       return;
     }
