@@ -123,6 +123,9 @@ class InboundCall {
   // The resulting slices refer to memory in this object.
   void SerializeResponseTo(std::vector<Slice>* slices) const;
 
+  // XXX
+  void SerializeResponseTo(Slice* slices, int* n_slices) const;
+
   // See RpcContext::AddRpcSidecar()
   Status AddOutboundSidecar(std::unique_ptr<RpcSidecar> car, int* idx);
 

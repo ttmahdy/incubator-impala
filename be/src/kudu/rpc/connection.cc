@@ -442,14 +442,16 @@ void Connection::QueueResponseForCall(gscoped_ptr<InboundCall> call) {
   // eventually runs in the reactor thread will take care of calling
   // ResponseTransferCallbacks::NotifyTransferAborted.
 
-  std::vector<Slice> slices;
-  call->SerializeResponseTo(&slices);
+  Slice tmp_slices[TransferLimits::kMaxPayloadSlices];
+  int n_slices = 0;
+  call->SerializeResponseTo(tmp_slices, &n_slices);
 
   TransferCallbacks *cb = new ResponseTransferCallbacks(std::move(call), this);
   // After the response is sent, can delete the InboundCall object.
   // We set a dummy call ID and required feature set, since these are not needed
   // when sending responses.
-  gscoped_ptr<OutboundTransfer> t(OutboundTransfer::CreateForCallResponse(slices, cb));
+  gscoped_ptr<OutboundTransfer> t(
+      OutboundTransfer::CreateForCallResponse(tmp_slices, n_slices, cb));
 
   QueueTransferTask *task = new QueueTransferTask(std::move(t), this);
   reactor_thread_->reactor()->ScheduleReactorTask(task);
@@ -477,7 +479,7 @@ void Connection::ReadHandler(ev::io &watcher, int revents) {
   last_activity_time_ = reactor_thread_->cur_time();
 
   while (true) {
-    if (!inbound_) {
+    if (inbound_.get() == nullptr) {
       inbound_.reset(new InboundTransfer());
     }
     Status status = inbound_->ReceiveBuffer(*socket_);

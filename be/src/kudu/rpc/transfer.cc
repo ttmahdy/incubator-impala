@@ -147,6 +147,11 @@ OutboundTransfer* OutboundTransfer::CreateForCallResponse(const std::vector<Slic
   return new OutboundTransfer(kInvalidCallId, payload, callbacks);
 }
 
+OutboundTransfer* OutboundTransfer::CreateForCallResponse(Slice* payload,
+                                                          int n_payload_slices,
+                                                          TransferCallbacks *callbacks) {
+  return new OutboundTransfer(kInvalidCallId, payload, n_payload_slices, callbacks);
+}
 
 OutboundTransfer::OutboundTransfer(int32_t call_id,
                                    const std::vector<Slice> &payload,
@@ -161,6 +166,22 @@ OutboundTransfer::OutboundTransfer(int32_t call_id,
   n_payload_slices_ = payload.size();
   CHECK_LE(n_payload_slices_, arraysize(payload_slices_));
   for (int i = 0; i < payload.size(); i++) {
+    payload_slices_[i] = payload[i];
+  }
+}
+
+OutboundTransfer::OutboundTransfer(int32_t call_id,
+                                   Slice* payload,
+                                   int n_payload_slices,
+                                   TransferCallbacks *callbacks)
+  : cur_slice_idx_(0),
+    cur_offset_in_slice_(0),
+    callbacks_(callbacks),
+    call_id_(call_id),
+    aborted_(false) {
+  n_payload_slices_ = n_payload_slices;
+  CHECK_LE(n_payload_slices_, arraysize(payload_slices_));
+  for (int i = 0; i < n_payload_slices; i++) {
     payload_slices_[i] = payload[i];
   }
 }

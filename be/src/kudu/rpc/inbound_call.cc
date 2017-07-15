@@ -187,6 +187,20 @@ void InboundCall::SerializeResponseTo(vector<Slice>* slices) const {
   }
 }
 
+void InboundCall::SerializeResponseTo(Slice* slices, int* n_slices) const {
+  TRACE_EVENT0("rpc", "InboundCall::SerializeResponseTo");
+  CHECK_GT(response_hdr_buf_.size(), 0);
+  CHECK_GT(response_msg_buf_.size(), 0);
+  slices[0] = Slice(response_hdr_buf_);
+  slices[1] = Slice(response_msg_buf_);
+  *n_slices = 2;
+  DCHECK_LE(outbound_sidecars_.size(), TransferLimits::kMaxSidecars);
+  for (const unique_ptr<RpcSidecar>& car : outbound_sidecars_) {
+    slices[(*n_slices)] = car->AsSlice();
+    ++(*n_slices);
+  }
+}
+
 Status InboundCall::AddOutboundSidecar(unique_ptr<RpcSidecar> car, int* idx) {
   // Check that the number of sidecars does not exceed the number of payload
   // slices that are free (two are used up by the header and main message

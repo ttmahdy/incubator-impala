@@ -127,6 +127,11 @@ class OutboundTransfer : public boost::intrusive::list_base_hook<> {
   static OutboundTransfer* CreateForCallResponse(const std::vector<Slice> &payload,
                                                  TransferCallbacks *callbacks);
 
+  // Create an outbound transfer for a call response.
+  // See above for details.
+  static OutboundTransfer* CreateForCallResponse(Slice* payload, int n_payload_slices,
+                                                 TransferCallbacks *callbacks);
+
   // Destruct the transfer. A transfer object should never be deallocated
   // before it has either (a) finished transferring, or (b) been Abort()ed.
   ~OutboundTransfer();
@@ -163,6 +168,11 @@ class OutboundTransfer : public boost::intrusive::list_base_hook<> {
  private:
   OutboundTransfer(int32_t call_id,
                    const std::vector<Slice> &payload,
+                   TransferCallbacks *callbacks);
+
+  OutboundTransfer(int32_t call_id,
+                   Slice* payload,
+                   int n_payload_slices,
                    TransferCallbacks *callbacks);
 
   // Slices to send. Uses an array here instead of a vector to avoid an expensive
