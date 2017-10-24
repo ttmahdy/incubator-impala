@@ -336,7 +336,8 @@ error_codes = (
 
   ("DISK_IO_ERROR", 110, "Disk I/O error: $0"),
 
-
+  ("STATISTICS_MISSING", 111,
+   "Query can't be executed due to statistics missing for: $0"),
 )
 
 import sys

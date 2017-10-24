@@ -411,6 +411,17 @@ Status ClientRequestState::ExecQueryOrDmlRequest(
       ss << tbls[i].db_name << "." << tbls[i].table_name;
     }
     summary_profile_->AddInfoString(TABLES_MISSING_STATS_KEY, ss.str());
+
+    // Don't run query if flag is set and statistics are missing.
+    if (exec_request_.query_options.reject_query_missing_stats) {
+      const ErrorMsg& rejected_msg = ErrorMsg(TErrorCode::STATISTICS_MISSING,
+        ss.str());
+      VLOG_QUERY << rejected_msg.msg();
+      {
+        lock_guard<mutex> l(lock_);
+        return Status::Expected(rejected_msg);
+      }
+    }
   }
 
   if (!query_exec_request.query_ctx.__isset.parent_query_id &&

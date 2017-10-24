@@ -286,6 +286,9 @@ struct TQueryOptions {
   // sophisticated strategies - e.g. reserving a small number of buffers large enough to
   // fit maximum-sized rows.
   60: optional i64 max_row_size = 524288;
+
+  // Don't run a query if any of the tables referenced are missing statistics.
+  61: optional bool reject_query_missing_stats = false;
 }
 
 // Impala currently has two types of sessions: Beeswax and HiveServer2

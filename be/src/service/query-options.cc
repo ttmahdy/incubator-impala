@@ -560,6 +560,11 @@ Status impala::SetQueryOption(const string& key, const string& value,
         query_options->__set_max_row_size(max_row_size_bytes);
         break;
       }
+      case TImpalaQueryOptions::REJECT_QUERY_MISSING_STATS: {
+        query_options->__set_reject_query_missing_stats(
+            iequals(value, "true") || iequals(value, "1"));
+        break;
+      }
       default:
         // We hit this DCHECK(false) if we forgot to add the corresponding entry here
         // when we add a new query option.

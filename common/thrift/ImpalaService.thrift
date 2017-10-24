@@ -288,6 +288,9 @@ enum TImpalaQueryOptions {
 
   // The maximum row size that memory is reserved for, in bytes.
   MAX_ROW_SIZE,
+
+  // Don't run a query if any of the tables referenced are missing statistics.
+  REJECT_QUERY_MISSING_STATS,
 }
 
 // The summary of a DML statement.

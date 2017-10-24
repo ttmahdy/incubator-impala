@@ -136,6 +136,9 @@ class TestQueries(ImpalaTestSuite):
       pytest.xfail("null data does not appear to work in hbase")
     self.run_test_case('QueryTest/null_data', vector)
 
+  def test_reject_query_missing_stats(self, vector):
+    self.run_test_case('QueryTest/reject-query-missing-stats', vector)
+
 # Tests in this class are only run against text/none either because that's the only
 # format that is supported, or the tests don't exercise the file format.
 class TestQueriesTextTables(ImpalaTestSuite):
