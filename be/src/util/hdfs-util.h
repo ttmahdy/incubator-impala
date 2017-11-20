@@ -55,5 +55,8 @@ bool IsADLSPath(const char* path);
 
 /// Returns true iff 'pathA' and 'pathB' are on the same filesystem.
 bool FilesystemsMatch(const char* pathA, const char* pathB);
+
+/// Returns basename of 'path'.
+string GetBaseName(const char* path);
 }
 #endif // IMPALA_UTIL_HDFS_UTIL_H

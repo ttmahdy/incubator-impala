@@ -264,6 +264,7 @@ public class TestUtils {
     queryCtx.setNow_string(formatter.format(now));
     formatter.setTimeZone(TimeZone.getTimeZone("GMT"));
     queryCtx.setUtc_timestamp_string(formatter.format(now));
+    queryCtx.setLocal_time_zone("PST8PDT");
     queryCtx.setStart_unix_millis(System.currentTimeMillis());
     queryCtx.setPid(1000);
     // Disable rewrites by default because some analyzer tests have non-executable

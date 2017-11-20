@@ -174,10 +174,9 @@ Literal::Literal(ColumnType type, float v)
 
 Literal::Literal(ColumnType type, double v)
   : ScalarExpr(type, true) {
+  DCHECK_NE(type.type, TYPE_TIMESTAMP);
   if (type.type == TYPE_DOUBLE) {
     value_.double_val = v;
-  } else if (type.type == TYPE_TIMESTAMP) {
-    value_.timestamp_val = TimestampValue::FromSubsecondUnixTime(v);
   } else if (type.type == TYPE_DECIMAL) {
     bool overflow = false;
     switch (type.GetByteSize()) {

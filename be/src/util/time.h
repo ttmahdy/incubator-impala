@@ -24,6 +24,10 @@
 
 #include "gutil/walltime.h"
 
+namespace cctz {
+class time_zone;
+}
+
 /// Utilities for collecting timings.
 namespace impala {
 
@@ -114,6 +118,10 @@ std::string ToStringFromUnixMicros(int64_t us,
 
 /// Converts input microseconds-since-epoch to date-time string in UTC time zone.
 std::string ToUtcStringFromUnixMicros(int64_t us,
+    TimePrecision p = TimePrecision::Microsecond);
+
+/// Converts input microseconds-since-epoch to date-time string in 'tz' time zone.
+std::string ToStringFromUnixMicros(int64_t us, const cctz::time_zone* tz,
     TimePrecision p = TimePrecision::Microsecond);
 
 /// Convenience function to convert the current time, derived from UnixMicros(),

@@ -97,7 +97,7 @@ class DataSourceScanNode : public ScanNode {
   std::vector<int> cols_next_val_idx_;
 
   /// Materializes the next row (next_row_idx_) into tuple.
-  Status MaterializeNextRow(MemPool* mem_pool, Tuple* tuple);
+  Status MaterializeNextRow(RuntimeState* state, MemPool* mem_pool, Tuple* tuple);
 
   /// Gets the next batch from the data source, stored in input_batch_.
   Status GetNextInputBatch();

@@ -22,7 +22,6 @@
 #include <boost/date_time/compiler_config.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
 #include <boost/date_time/local_time/local_time.hpp>
-#include <ctime>
 #include <gflags/gflags.h>
 #include <string>
 
@@ -34,6 +33,10 @@
 /// The flag is disabled by default but should be flipped with the next release that
 /// accepts breaking-changes.
 DECLARE_bool(use_local_tz_for_unix_timestamp_conversions);
+
+namespace cctz {
+class time_zone;
+}
 
 namespace impala {
 
@@ -95,22 +98,24 @@ class TimestampValue {
   /// Return the corresponding timestamp in the local timezone if
   /// FLAGS_use_local_tz_for_unix_timestamp_conversions is true. Otherwise, return the
   /// corresponding timestamp in UTC.
-  static TimestampValue FromUnixTime(time_t unix_time) {
-    return TimestampValue(UnixTimeToPtime(unix_time));
+  static TimestampValue FromUnixTime(time_t unix_time, const cctz::time_zone* local_tz) {
+    return TimestampValue(UnixTimeToPtime(unix_time, local_tz));
   }
 
   /// Same as FromUnixTime() above, but adds the specified number of nanoseconds to the
   /// resulting TimestampValue. Handles negative nanoseconds and the case where
   /// abs(nanos) >= 1e9.
-  static TimestampValue FromUnixTimeNanos(time_t unix_time, int64_t nanos) {
-    boost::posix_time::ptime temp = UnixTimeToPtime(unix_time);
+  static TimestampValue FromUnixTimeNanos(time_t unix_time, int64_t nanos,
+      const cctz::time_zone* local_tz) {
+    boost::posix_time::ptime temp = UnixTimeToPtime(unix_time, local_tz);
     temp += boost::posix_time::nanoseconds(nanos);
     return TimestampValue(temp);
   }
 
   /// Return the corresponding timestamp in local time zone for the Unix time specified in
   /// microseconds.
-  static TimestampValue FromUnixTimeMicros(int64_t unix_time_micros);
+  static TimestampValue FromUnixTimeMicros(int64_t unix_time_micros,
+      const cctz::time_zone* local_tz);
 
   /// Return the corresponding timestamp in UTC for the Unix time specified in
   /// microseconds.
@@ -119,9 +124,10 @@ class TimestampValue {
   /// Returns a TimestampValue where the integer part of the specified 'unix_time'
   /// specifies the number of seconds (see above), and the fractional part is converted
   /// to nanoseconds and added to the resulting TimestampValue.
-  static TimestampValue FromSubsecondUnixTime(double unix_time) {
+  static TimestampValue FromSubsecondUnixTime(double unix_time,
+      const cctz::time_zone* local_tz) {
     const time_t unix_time_whole = unix_time;
-    boost::posix_time::ptime temp = UnixTimeToPtime(unix_time_whole);
+    boost::posix_time::ptime temp = UnixTimeToPtime(unix_time_whole, local_tz);
     temp += boost::posix_time::nanoseconds((unix_time - unix_time_whole) / ONE_BILLIONTH);
     return TimestampValue(temp);
   }
@@ -212,16 +218,16 @@ class TimestampValue {
   /// instance is interpreted as a local value. If the flag is false, UTC is assumed.
   /// Returns false if the conversion failed (unix_time will be undefined), otherwise
   /// true.
-  bool ToUnixTime(time_t* unix_time) const;
+  bool ToUnixTime(const cctz::time_zone* local_tz, time_t* unix_time) const;
 
   /// Converts to Unix time with fractional seconds.
   /// Returns false if the conversion failed (unix_time will be undefined), otherwise
   /// true.
-  bool ToSubsecondUnixTime(double* unix_time) const;
+  bool ToSubsecondUnixTime(const cctz::time_zone* local_tz, double* unix_time) const;
 
   /// Converts from UTC to local time in-place. The caller must ensure the TimestampValue
   /// this function is called upon has both a valid date and time.
-  void UtcToLocal();
+  void UtcToLocal(const cctz::time_zone* local_tz);
 
   void set_date(const boost::gregorian::date d) { date_ = d; }
   void set_time(const boost::posix_time::time_duration t) { time_ = t; }
@@ -291,11 +297,13 @@ class TimestampValue {
   /// The time zone of the resulting ptime is determined by
   /// FLAGS_use_local_tz_for_unix_timestamp_conversions. If the flag is true, the value
   /// will be in the local time zone. If the flag is false, the value will be in UTC.
-  static boost::posix_time::ptime UnixTimeToPtime(time_t unix_time);
+  static boost::posix_time::ptime UnixTimeToPtime(time_t unix_time,
+      const cctz::time_zone* local_tz);
 
   /// Same as the above, but the time zone of the resulting ptime is always in the local
   /// time zone.
-  static boost::posix_time::ptime UnixTimeToLocalPtime(time_t unix_time);
+  static boost::posix_time::ptime UnixTimeToLocalPtime(time_t unix_time,
+      const cctz::time_zone* local_tz);
 
   /// Same as the above, but the time zone of the resulting ptime is always in UTC.
   static boost::posix_time::ptime UnixTimeToUtcPtime(time_t unix_time);

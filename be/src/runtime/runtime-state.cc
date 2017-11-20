@@ -31,6 +31,7 @@
 #include "common/status.h"
 #include "exprs/scalar-expr.h"
 #include "exprs/scalar-fn-call.h"
+#include "exprs/timezone_db.h"
 #include "runtime/bufferpool/buffer-pool.h"
 #include "runtime/bufferpool/reservation-tracker.h"
 #include "runtime/data-stream-mgr-base.h"
@@ -69,6 +70,7 @@ RuntimeState::RuntimeState(QueryState* query_state, const TPlanFragmentCtx& frag
     now_(new TimestampValue(TimestampValue::Parse(query_state->query_ctx().now_string))),
     utc_timestamp_(new TimestampValue(TimestampValue::Parse(
         query_state->query_ctx().utc_timestamp_string))),
+    local_time_zone_(&TimezoneDatabase::GetUtcTimezone()),
     exec_env_(exec_env),
     profile_(RuntimeProfile::Create(
           obj_pool(), "Fragment " + PrintId(instance_ctx.fragment_instance_id))),
@@ -86,6 +88,7 @@ RuntimeState::RuntimeState(
     local_query_state_(query_state_),
     now_(new TimestampValue(TimestampValue::Parse(qctx.now_string))),
     utc_timestamp_(new TimestampValue(TimestampValue::Parse(qctx.utc_timestamp_string))),
+    local_time_zone_(&TimezoneDatabase::GetUtcTimezone()),
     exec_env_(exec_env),
     profile_(RuntimeProfile::Create(obj_pool(), "<unnamed>")) {
   // We may use execution resources while evaluating exprs, etc. Decremented in
@@ -121,6 +124,16 @@ void RuntimeState::Init() {
     instance_buffer_reservation_->InitChildTracker(profile_,
         query_state_->buffer_reservation(), instance_mem_tracker_.get(),
         numeric_limits<int64_t>::max());
+  }
+
+  // Find local timezone
+  const cctz::time_zone* tz = TimezoneDatabase::FindTimezone(query_ctx().local_time_zone);
+  if (LIKELY(tz != nullptr)) {
+    local_time_zone_ = tz;
+  } else {
+    LOG(ERROR) << "Failed to find local timezone " << query_ctx().local_time_zone
+               << ". Falling back to UTC.";
+    local_time_zone_ = &TimezoneDatabase::GetUtcTimezone();
   }
 }
 

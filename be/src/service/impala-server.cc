@@ -41,9 +41,11 @@
 
 #include "catalog/catalog-server.h"
 #include "catalog/catalog-util.h"
+#include "cctz/time_zone.h"
 #include "common/logging.h"
 #include "common/version.h"
 #include "exec/external-data-source-executor.h"
+#include "exprs/timezone_db.h"
 #include "rpc/authentication.h"
 #include "rpc/rpc-trace.h"
 #include "rpc/thrift-thread.h"
@@ -915,10 +917,20 @@ Status ImpalaServer::ExecuteInternal(
 void ImpalaServer::PrepareQueryContext(TQueryCtx* query_ctx) {
   query_ctx->__set_pid(getpid());
   int64_t now_us = UnixMicros();
-  query_ctx->__set_utc_timestamp_string(ToUtcStringFromUnixMicros(now_us));
-  query_ctx->__set_now_string(ToStringFromUnixMicros(now_us));
+  const cctz::time_zone& utc_tz = TimezoneDatabase::GetUtcTimezone();
+  string local_tz_name = TimezoneDatabase::LocalZoneName();
+  const cctz::time_zone *local_tz = TimezoneDatabase::FindTimezone(local_tz_name);
+  if (local_tz == nullptr) {
+    LOG(ERROR) << "Failed to find local timezone " << local_tz_name
+        << ". Falling back to UTC";
+    local_tz_name = "UTC";
+    local_tz = &utc_tz;
+  }
+  query_ctx->__set_utc_timestamp_string(ToStringFromUnixMicros(now_us, &utc_tz));
+  query_ctx->__set_now_string(ToStringFromUnixMicros(now_us, local_tz));
   query_ctx->__set_start_unix_millis(now_us / MICROS_PER_MILLI);
   query_ctx->__set_coord_address(ExecEnv::GetInstance()->backend_address());
+  query_ctx->__set_local_time_zone(local_tz_name);
 
   // Creating a random_generator every time is not free, but
   // benchmarks show it to be slightly cheaper than contending for a

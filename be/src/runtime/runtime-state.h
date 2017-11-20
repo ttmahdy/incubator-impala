@@ -31,6 +31,10 @@
 #include "util/runtime-profile.h"
 #include "gen-cpp/ImpalaInternalService_types.h"
 
+namespace cctz {
+class time_zone;
+}
+
 namespace impala {
 
 class BufferPool;
@@ -99,6 +103,7 @@ class RuntimeState {
   const TimestampValue* now() const { return now_.get(); }
   const TimestampValue* utc_timestamp() const { return utc_timestamp_.get(); }
   void set_now(const TimestampValue* now);
+  const cctz::time_zone* local_time_zone() const { return local_time_zone_; }
   const TUniqueId& query_id() const { return query_ctx().query_id; }
   const TUniqueId& fragment_instance_id() const {
     return instance_ctx_ != nullptr
@@ -312,6 +317,10 @@ class RuntimeState {
   /// avoid clang issues.
   boost::scoped_ptr<TimestampValue> now_;
   boost::scoped_ptr<TimestampValue> utc_timestamp_;
+
+  /// Query-global timezone used as local timezone when executing the query. Use pointer
+  /// to avoid inclusion of cctz/time_zone.h.
+  const cctz::time_zone* local_time_zone_;
 
   /// TODO: get rid of this and use ExecEnv::GetInstance() instead
   ExecEnv* exec_env_;

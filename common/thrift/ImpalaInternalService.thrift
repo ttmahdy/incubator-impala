@@ -396,6 +396,9 @@ struct TQueryCtx {
   // String containing a timestamp (in UTC) set as the query submission time. It
   // represents the same point in time as now_string
   17: required string utc_timestamp_string
+
+  // String containing name of the local time zone.
+  18: required string local_time_zone
 }
 
 // Specification of one output destination of a plan fragment

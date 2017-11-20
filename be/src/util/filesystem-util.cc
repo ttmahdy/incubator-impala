@@ -158,4 +158,34 @@ uint64_t FileSystemUtil::MaxNumFileHandles() {
   return 0ul;
 }
 
+Status FileSystemUtil::GetRealPath(const string& file_path, string* real_path) {
+  DCHECK(real_path != nullptr);
+  char rp[PATH_MAX];
+  if (realpath(file_path.c_str(), rp) == nullptr) {
+    return Status(ErrorMsg(TErrorCode::RUNTIME_ERROR,
+        Substitute("Resolving path for $0 failed with errno=$1 description=$2",
+            file_path.c_str(), errno, GetStrErrMsg())));
+  }
+  *real_path = rp;
+  return Status::OK();
+}
+
+Status FileSystemUtil::IsSymbolicLink(const string& file_path, bool* is_symbolic_link,
+    string* real_path) {
+  DCHECK(is_symbolic_link != nullptr);
+  DCHECK(real_path != nullptr);
+  struct stat sb;
+  if (lstat(file_path.c_str(), &sb) == -1) {
+    return Status(ErrorMsg(TErrorCode::RUNTIME_ERROR,
+        Substitute("Getting file status for $0 failed with errno=$1 description=$2",
+            file_path.c_str(), errno, GetStrErrMsg())));
+  }
+
+  *is_symbolic_link = S_ISLNK(sb.st_mode) && sb.st_size > 0;
+  if (*is_symbolic_link) {
+    return GetRealPath(file_path, real_path);
+  }
+  return Status::OK();
+}
+
 } // namespace impala

@@ -72,6 +72,12 @@ int ImpaladMain(int argc, char** argv) {
   ExecEnv exec_env;
   ABORT_IF_ERROR(exec_env.Init());
   CommonMetrics::InitCommonMetrics(exec_env.metrics());
+
+  // Add path to time-zone db as a property
+  StringProperty* tzdata_path = exec_env.metrics()->AddProperty<string>(
+      "tzdata-path", "");
+  tzdata_path->SetValue(TimezoneDatabase::GetPath());
+
   ABORT_IF_ERROR(StartMemoryMaintenanceThread()); // Memory metrics are created in Init().
   ABORT_IF_ERROR(
       StartThreadInstrumentation(exec_env.metrics(), exec_env.webserver(), true));

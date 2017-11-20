@@ -19,6 +19,8 @@
 
 #include <boost/date_time/posix_time/posix_time.hpp>
 
+#include "exprs/timestamp-functions.h"
+#include "exprs/timezone_db.h"
 #include "runtime/timestamp-parse-util.h"
 
 #include "common/names.h"
@@ -78,33 +80,39 @@ int TimestampValue::Format(const DateTimeFormatContext& dt_ctx, int len, char* b
   return TimestampParser::Format(dt_ctx, date_, time_, len, buff);
 }
 
-void TimestampValue::UtcToLocal() {
+namespace {
+// TODO: Duplicate code (be/src/exprs/timestamp-functions-ir.cc)
+inline cctz::time_point<cctz::sys_seconds> FromUnixSeconds(time_t t) {
+  return std::chrono::time_point_cast<cctz::sys_seconds>(
+      std::chrono::system_clock::from_time_t(0)) + cctz::sys_seconds(t);
+}
+
+// TODO: Duplicate code (be/src/exprs/timestamp-functions.cc)
+inline bool CheckIfDateOutOfRange(const cctz::civil_day& date) {
+  static const cctz::civil_day max_date(TimestampFunctions::MAX_YEAR, 12, 31);
+  static const cctz::civil_day min_date(TimestampFunctions::MIN_YEAR, 1, 1);
+  return date < min_date || date > max_date;
+}
+
+}
+
+void TimestampValue::UtcToLocal(const cctz::time_zone* local_tz) {
   DCHECK(HasDateAndTime());
-  // Previously, conversion was done using boost functions but it was found to be
-  // too slow. Doing the conversion without function calls (which also avoids some
-  // unnecessary validations) the conversion only take half as long. Original:
-  // http://www.boost.org/doc/libs/1_55_0/boost/date_time/c_local_time_adjustor.hpp
-  try {
-    time_t utc =
-        (static_cast<int64_t>(date_.day_number()) - EPOCH_DAY_NUMBER) * SECONDS_IN_DAY +
-        time_.hours() * SECONDS_IN_HOUR +
-        time_.minutes() * SECONDS_IN_MINUTE +
-        time_.seconds();
-    tm temp;
-    if (UNLIKELY(localtime_r(&utc, &temp) == nullptr)) {
-      *this = ptime(not_a_date_time);
-      return;
-    }
-    // Unlikely but a time zone conversion may push the value over the min/max
-    // boundary resulting in an exception.
-    date_ = boost::gregorian::date(
-        static_cast<unsigned short>(temp.tm_year + TM_YEAR_OFFSET),
-        static_cast<unsigned short>(temp.tm_mon + TM_MONTH_OFFSET),
-        static_cast<unsigned short>(temp.tm_mday));
-    time_ = time_duration(temp.tm_hour, temp.tm_min, temp.tm_sec,
-        time().fractional_seconds());
-  } catch (std::exception& /* from Boost */) {
-    *this = ptime(not_a_date_time);
+  DCHECK(local_tz != nullptr);
+  const cctz::civil_second from_cs(date_.year(), date_.month(), date_.day(),
+      time_.hours(), time_.minutes(), time_.seconds());
+
+  auto from_tp = cctz::convert(from_cs, TimezoneDatabase::GetUtcTimezone());
+  auto to_cs = cctz::convert(from_tp, *local_tz);
+  // boost::gregorian::date() throws boost::gregorian::bad_year if year is not in the
+  // 1400..9999 range. Need to check validity before creating the date object.
+  if (UNLIKELY(CheckIfDateOutOfRange(cctz::civil_day(to_cs)))) {
+    date_ = boost::gregorian::date(boost::gregorian::not_a_date_time);
+    time_ = boost::posix_time::time_duration(boost::posix_time::not_a_date_time);
+  } else {
+    date_ = boost::gregorian::date(to_cs.year(), to_cs.month(), to_cs.day());
+    time_ = boost::posix_time::time_duration(to_cs.hour(), to_cs.minute(), to_cs.second(),
+        time_.fractional_seconds());
   }
 }
 
@@ -120,32 +128,33 @@ void TimestampValue::Validate() {
 }
 
 /// Return a ptime representation of the given Unix time (seconds since the Unix epoch).
-/// The time zone of the resulting ptime is local time. This is called by
-/// UnixTimeToPtime.
-ptime TimestampValue::UnixTimeToLocalPtime(time_t unix_time) {
-  tm temp_tm;
-  // TODO: avoid localtime*, which takes a global timezone db lock
-  if (UNLIKELY(localtime_r(&unix_time, &temp_tm) == nullptr)) {
+/// The time zone of the resulting ptime is local time. This is called by UnixTimeToPtime.
+ptime TimestampValue::UnixTimeToLocalPtime(time_t unix_time,
+    const cctz::time_zone* local_tz) {
+  DCHECK(local_tz != nullptr);
+  auto from_tp = FromUnixSeconds(unix_time);
+  auto to_cs = cctz::convert(from_tp, *local_tz);
+  // boost::gregorian::date() throws boost::gregorian::bad_year if year is not in the
+  // 1400..9999 range. Need to check validity before creating the date object.
+  if (UNLIKELY(CheckIfDateOutOfRange(cctz::civil_day(to_cs)))) {
     return ptime(not_a_date_time);
-  }
-  try {
-    return ptime_from_tm(temp_tm);
-  } catch (std::exception&) {
-    return ptime(not_a_date_time);
+  } else {
+    return ptime(
+        boost::gregorian::date(to_cs.year(), to_cs.month(), to_cs.day()),
+        boost::posix_time::time_duration(to_cs.hour(), to_cs.minute(), to_cs.second()));
   }
 }
 
 /// Return a ptime representation of the given Unix time (seconds since the Unix epoch).
 /// The time zone of the resulting ptime is UTC.
-/// In order to avoid a serious performance degredation using libc (IMPALA-5357), this
-/// function uses boost to convert the time_t to a ptime. Unfortunately, because the boost
-/// conversion relies on time_duration to represent the time_t and internally
+/// In order to avoid a serious performance degredation using CCTZ, this function uses
+/// boost to convert the time_t to a ptime. Unfortunately, because the boost conversion
+/// relies on time_duration to represent the time_t and internally
 /// time_duration stores nanosecond precision ticks, the 'fast path' conversion using
 /// boost can only handle a limited range of dates (appx years 1677-2622, while Impala
-/// supports years 1600-9999). For dates outside this range, the conversion will instead
-/// use the libc function gmtime_r which supports those dates but takes the global lock
-/// for the timezone db (even though technically it is not needed for the conversion,
-/// again see IMPALA-5357). This is called by UnixTimeToPtime.
+/// supports years 1400-9999). For dates outside this range, the conversion will instead
+/// use the CCTZ function convert which supports those dates. This is called by
+/// UnixTimeToPtime.
 ptime TimestampValue::UnixTimeToUtcPtime(time_t unix_time) {
   // Minimum Unix time that can be converted with from_time_t: 1677-Sep-21 00:12:44
   const int64_t MIN_BOOST_CONVERT_UNIX_TIME = -9223372036;
@@ -160,20 +169,14 @@ ptime TimestampValue::UnixTimeToUtcPtime(time_t unix_time) {
     }
   }
 
-  tm temp_tm;
-  if (UNLIKELY(gmtime_r(&unix_time, &temp_tm) == nullptr)) {
-    return ptime(not_a_date_time);
-  }
-  try {
-    return ptime_from_tm(temp_tm);
-  } catch (std::exception&) {
-    return ptime(not_a_date_time);
-  }
+  return UnixTimeToLocalPtime(unix_time, &TimezoneDatabase::GetUtcTimezone());
 }
 
-ptime TimestampValue::UnixTimeToPtime(time_t unix_time) {
+ptime TimestampValue::UnixTimeToPtime(time_t unix_time,
+    const cctz::time_zone* local_tz) {
+  DCHECK(local_tz != nullptr);
   if (FLAGS_use_local_tz_for_unix_timestamp_conversions) {
-    return UnixTimeToLocalPtime(unix_time);
+    return UnixTimeToLocalPtime(unix_time, local_tz);
   } else {
     return UnixTimeToUtcPtime(unix_time);
   }

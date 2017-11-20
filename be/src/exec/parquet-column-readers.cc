@@ -600,7 +600,7 @@ bool ScalarColumnReader<TimestampValue, parquet::Type::INT96, true>::ConvertSlot
   DCHECK(FLAGS_convert_legacy_hive_parquet_utc_timestamps);
   TimestampValue* dst_ts = reinterpret_cast<TimestampValue*>(slot);
   *dst_ts = *src;
-  if (dst_ts->HasDateAndTime()) dst_ts->UtcToLocal();
+  if (dst_ts->HasDateAndTime()) dst_ts->UtcToLocal(parent_->state_->local_time_zone());
   return true;
 }
 

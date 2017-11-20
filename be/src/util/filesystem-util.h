@@ -52,6 +52,15 @@ class FileSystemUtil {
   /// Returns the currently allowed maximum of possible file descriptors. In case of an
   /// error returns 0.
   static uint64_t MaxNumFileHandles();
+
+  /// Resolves 'file_path' path and returns the real path in 'real_path'.
+  static Status GetRealPath(
+      const std::string& file_path, std::string* real_path) WARN_UNUSED_RESULT;
+
+  /// Checks if 'file_path' is a symbolic link. Is it is, 'is_symbolic_link' is set to
+  /// 'true' and 'real_path' is set to the resolved path.
+  static Status IsSymbolicLink(const std::string& file_path, bool* is_symbolic_link,
+      std::string* real_path) WARN_UNUSED_RESULT;
 };
 
 }
