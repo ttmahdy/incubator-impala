@@ -560,6 +560,29 @@ Status impala::SetQueryOption(const string& key, const string& value,
         query_options->__set_max_row_size(max_row_size_bytes);
         break;
       }
+      case TImpalaQueryOptions::REJECT_QUERY_MISSING_ESTIMATES: {
+        query_options->__set_reject_query_missing_estimates(
+        iequals(value, "true") || iequals(value, "1"));
+        break;
+      }
+      case TImpalaQueryOptions::MAX_QUERY_FRAGMENTS: {
+        StringParser::ParseResult status;
+        int val = StringParser::StringToInt<int>(value.c_str(), value.size(), &status);
+        if (status != StringParser::PARSE_SUCCESS) {
+          return Status(Substitute("Invalid number of query fragments: '$0'.", value));
+        }
+
+        // Handle default value
+        if (val == -1) {
+          query_options->__set_max_query_fragments(-1);
+        } else  if (val <= 1) {
+          return Status(Substitute("Invalid number of query fragments: '$0'. "
+              "Only values greater than 1 are allowed.", val));
+        } else {
+          query_options->__set_max_query_fragments(val);
+        }
+        break;
+      }
       default:
         // We hit this DCHECK(false) if we forgot to add the corresponding entry here
         // when we add a new query option.

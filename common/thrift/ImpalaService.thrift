@@ -288,6 +288,12 @@ enum TImpalaQueryOptions {
 
   // The maximum row size that memory is reserved for, in bytes.
   MAX_ROW_SIZE,
+  
+  // Reject queries against tables missing estimates.
+  REJECT_QUERY_MISSING_ESTIMATES,
+  
+  // The maximum number of queries fragments a query can run.
+  MAX_QUERY_FRAGMENTS,
 }
 
 // The summary of a DML statement.

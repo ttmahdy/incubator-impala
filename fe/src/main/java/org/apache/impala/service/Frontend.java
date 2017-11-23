@@ -933,7 +933,7 @@ public class Frontend {
    * Return a TPlanExecInfo corresponding to the plan with root fragment 'planRoot'.
    */
   private TPlanExecInfo createPlanExecInfo(PlanFragment planRoot, Planner planner,
-      TQueryCtx queryCtx, TQueryExecRequest queryExecRequest) {
+      TQueryCtx queryCtx, TQueryExecRequest queryExecRequest) throws ImpalaException  {
     TPlanExecInfo result = new TPlanExecInfo();
     ArrayList<PlanFragment> fragments = planRoot.getNodesPreOrder();
 
@@ -949,6 +949,7 @@ public class Frontend {
     Set<TTableName> tablesMissingStats = Sets.newTreeSet();
     Set<TTableName> tablesWithCorruptStats = Sets.newTreeSet();
     Set<TTableName> tablesWithMissingDiskIds = Sets.newTreeSet();
+    Set<TTableName> tablesWithMissingEstimates = Sets.newTreeSet();
     for (ScanNode scanNode: scanNodes) {
       result.putToPer_node_scan_ranges(
           scanNode.getId().asInt(), scanNode.getScanRangeLocations());
@@ -956,10 +957,23 @@ public class Frontend {
       TTableName tableName = scanNode.getTupleDesc().getTableName().toThrift();
       if (scanNode.isTableMissingStats()) tablesMissingStats.add(tableName);
       if (scanNode.hasCorruptTableStats()) tablesWithCorruptStats.add(tableName);
+      if (scanNode.getCardinality() == -1) tablesWithMissingEstimates.add(tableName); 
       if (scanNode instanceof HdfsScanNode &&
           ((HdfsScanNode) scanNode).hasMissingDiskIds()) {
         tablesWithMissingDiskIds.add(tableName);
       }
+    }
+    
+    // Check if query should be rejected if tables are missing estimates
+    if (!planner.getAnalysisResult().isExplainStmt()
+    		&& queryCtx.client_request.query_options.isReject_query_missing_estimates()
+    		&& tablesWithMissingEstimates.size() > 0) {
+        List<String> tableNames = Lists.newArrayList();
+        for (TTableName tableName: tablesWithMissingEstimates) {
+            tableNames.add(tableName.db_name + "." + tableName.table_name);
+        }
+    	throw new AnalysisException("The following tables are missing estimates, please compute stats " +
+    	          "and/or column statistics.\n" + Joiner.on(", ").join(tableNames) + "\n");	
     }
 
     // Clear pre-existing lists to avoid adding duplicate entries in FE tests.
@@ -976,10 +990,24 @@ public class Frontend {
     }
 
     // The fragment at this point has all state set, serialize it to thrift.
+    int fragmentsCount = 0;
+    int mtDop = queryCtx.client_request.query_options.getMt_dop();
     for (PlanFragment fragment: fragments) {
       TPlanFragment thriftFragment = fragment.toThrift();
       result.addToFragments(thriftFragment);
+      fragmentsCount += fragment.getNumInstances(mtDop); 
     }
+    
+    if (!planner.getAnalysisResult().isExplainStmt()
+                && queryCtx.client_request.query_options.max_query_fragments != -1
+    		&& queryCtx.client_request.query_options.max_query_fragments < fragmentsCount) {
+    	throw new AnalysisException("Query has more fragments " + fragmentsCount 
+    			+ " than allowed by MAX_QUERY_FRAGMENTS " 
+    			+ queryCtx.client_request.query_options.max_query_fragments);
+    }
+    
+    LOG.info("XXX Number of query fragments is:" + fragmentsCount);
+    LOG.info("XXX tables missing stats is:" + tablesMissingStats.toString());
 
     return result;
   }

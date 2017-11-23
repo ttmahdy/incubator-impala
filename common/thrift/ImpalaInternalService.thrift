@@ -286,6 +286,12 @@ struct TQueryOptions {
   // sophisticated strategies - e.g. reserving a small number of buffers large enough to
   // fit maximum-sized rows.
   60: optional i64 max_row_size = 524288;
+  
+  // Reject queries against tables missing estimates.
+  61: optional bool reject_query_missing_estimates = false;
+  
+  // The maximum number of queries fragments a query can run.
+  62: optional i64 max_query_fragments = -1;
 }
 
 // Impala currently has two types of sessions: Beeswax and HiveServer2
