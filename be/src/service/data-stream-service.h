@@ -29,6 +29,7 @@ class RpcContext;
 namespace impala {
 
 class RpcMgr;
+class Status;
 
 /// This is singleton class which provides data transmission services between fragment
 /// instances. The client for this service is implemented in KrpcDataStreamSender.
@@ -48,6 +49,14 @@ class DataStreamService : public DataStreamServiceIf {
   /// The receiver replies to the client with a status serialized in 'response'.
   virtual void TransmitData(const TransmitDataRequestPB* request,
       TransmitDataResponsePB* response, kudu::rpc::RpcContext* context);
+
+  /// XXX
+  virtual google::protobuf::Message* AllocResponseBuffer(
+      const kudu::rpc::RpcMethodInfo* method_info) override;
+
+  /// XXX
+  template<typename ResponseType>
+  static void Reply(const Status& status, kudu::rpc::RpcContext* rpc_context);
 };
 
 } // namespace impala

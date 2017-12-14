@@ -408,9 +408,10 @@ Status KrpcDataStreamSender::Channel::DoTransmitDataRpc() {
 
   // Initialize some constant fields in the request protobuf.
   TransmitDataRequestPB req;
-  UniqueIdPB* finstance_id_pb = req.mutable_dest_fragment_instance_id();
-  finstance_id_pb->set_lo(fragment_instance_id_.lo);
-  finstance_id_pb->set_hi(fragment_instance_id_.hi);
+  UniqueIdPB finstance_id_pb;
+  finstance_id_pb.set_lo(fragment_instance_id_.lo);
+  finstance_id_pb.set_hi(fragment_instance_id_.hi);
+  req.set_allocated_dest_fragment_instance_id(&finstance_id_pb);
   req.set_sender_id(parent_->sender_id_);
   req.set_dest_node_id(dest_node_id_);
 
@@ -438,6 +439,7 @@ Status KrpcDataStreamSender::Channel::DoTransmitDataRpc() {
   // 'req' took ownership of 'header'. Need to release its ownership or 'header' will be
   // deleted by destructor.
   req.release_row_batch_header();
+  req.release_dest_fragment_instance_id();
   return Status::OK();
 }
 
@@ -511,14 +513,16 @@ Status KrpcDataStreamSender::Channel::DoEndDataStreamRpc() {
   DCHECK(rpc_in_flight_);
   EndDataStreamRequestPB eos_req;
   rpc_controller_.Reset();
-  UniqueIdPB* finstance_id_pb = eos_req.mutable_dest_fragment_instance_id();
-  finstance_id_pb->set_lo(fragment_instance_id_.lo);
-  finstance_id_pb->set_hi(fragment_instance_id_.hi);
+  UniqueIdPB finstance_id_pb;
+  finstance_id_pb.set_lo(fragment_instance_id_.lo);
+  finstance_id_pb.set_hi(fragment_instance_id_.hi);
+  eos_req.set_allocated_dest_fragment_instance_id(&finstance_id_pb);
   eos_req.set_sender_id(parent_->sender_id_);
   eos_req.set_dest_node_id(dest_node_id_);
   eos_resp_.Clear();
   proxy_->EndDataStreamAsync(eos_req, &eos_resp_, &rpc_controller_,
       boost::bind(&KrpcDataStreamSender::Channel::EndDataStreamCompleteCb, this));
+  eos_req.release_dest_fragment_instance_id();
   return Status::OK();
 }
 

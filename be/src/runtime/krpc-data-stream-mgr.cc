@@ -28,6 +28,7 @@
 #include "runtime/raw-value.inline.h"
 #include "runtime/row-batch.h"
 #include "runtime/runtime-state.h"
+#include "service/data-stream-service.h"
 #include "util/debug-util.h"
 #include "util/periodic-counter-updater.h"
 #include "util/runtime-profile-counters.h"
@@ -114,8 +115,7 @@ shared_ptr<DataStreamRecvrBase> KrpcDataStreamMgr::CreateRecvr(
       }
       for (const unique_ptr<EndDataStreamCtx>& ctx : early_senders.closed_sender_ctxs) {
         recvr->RemoveSender(ctx->request->sender_id());
-        Status::OK().ToProto(ctx->response->mutable_status());
-        ctx->rpc_context->RespondSuccess();
+        DataStreamService::Reply<EndDataStreamResponsePB>(Status::OK(), ctx->rpc_context);
         num_senders_waiting_->Increment(-1);
       }
       early_senders_map_.erase(it);
@@ -148,27 +148,25 @@ shared_ptr<KrpcDataStreamRecvr> KrpcDataStreamMgr::FindRecvr(
 }
 
 void KrpcDataStreamMgr::AddEarlySender(const TUniqueId& finst_id,
-    const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
-    kudu::rpc::RpcContext* rpc_context) {
+    const TransmitDataRequestPB* request, kudu::rpc::RpcContext* rpc_context) {
   RecvrId recvr_id = make_pair(finst_id, request->dest_node_id());
-  auto payload = make_unique<TransmitDataCtx>(request, response, rpc_context);
+  auto payload = make_unique<TransmitDataCtx>(request, rpc_context);
   early_senders_map_[recvr_id].waiting_sender_ctxs.emplace_back(move(payload));
   num_senders_waiting_->Increment(1);
   total_senders_waited_->Increment(1);
 }
 
 void KrpcDataStreamMgr::AddEarlyClosedSender(const TUniqueId& finst_id,
-    const EndDataStreamRequestPB* request, EndDataStreamResponsePB* response,
-    kudu::rpc::RpcContext* rpc_context) {
+    const EndDataStreamRequestPB* request, kudu::rpc::RpcContext* rpc_context) {
   RecvrId recvr_id = make_pair(finst_id, request->dest_node_id());
-  auto payload = make_unique<EndDataStreamCtx>(request, response, rpc_context);
+  auto payload = make_unique<EndDataStreamCtx>(request, rpc_context);
   early_senders_map_[recvr_id].closed_sender_ctxs.emplace_back(move(payload));
   num_senders_waiting_->Increment(1);
   total_senders_waited_->Increment(1);
 }
 
 void KrpcDataStreamMgr::AddData(const TransmitDataRequestPB* request,
-    TransmitDataResponsePB* response, kudu::rpc::RpcContext* rpc_context) {
+     kudu::rpc::RpcContext* rpc_context) {
   TUniqueId finst_id;
   finst_id.__set_lo(request->dest_fragment_instance_id().lo());
   finst_id.__set_hi(request->dest_fragment_instance_id().hi());
@@ -188,7 +186,7 @@ void KrpcDataStreamMgr::AddData(const TransmitDataRequestPB* request,
     // (e.g. if the receiver was closed and has already been retired from the
     // closed_stream_cache_), the sender is timed out by the maintenance thread.
     if (!already_unregistered && recvr == nullptr) {
-      AddEarlySender(finst_id, request, response, rpc_context);
+      AddEarlySender(finst_id, request, rpc_context);
       return;
     }
   }
@@ -199,12 +197,11 @@ void KrpcDataStreamMgr::AddData(const TransmitDataRequestPB* request,
     // detect this case by checking already_unregistered - if true then the receiver was
     // already closed deliberately, and there's no unexpected error here.
     ErrorMsg msg(TErrorCode::DATASTREAM_RECVR_CLOSED, PrintId(finst_id), dest_node_id);
-    Status::Expected(msg).ToProto(response->mutable_status());
-    rpc_context->RespondSuccess();
+    DataStreamService::Reply<TransmitDataResponsePB>(Status::Expected(msg), rpc_context);
     return;
   }
   DCHECK(recvr != nullptr);
-  recvr->AddBatch(request, response, rpc_context);
+  recvr->AddBatch(request, rpc_context);
 }
 
 void KrpcDataStreamMgr::EnqueueDeserializeTask(const TUniqueId& finst_id,
@@ -227,7 +224,7 @@ void KrpcDataStreamMgr::DeserializeThreadFn(int thread_id, const DeserializeTask
 }
 
 void KrpcDataStreamMgr::CloseSender(const EndDataStreamRequestPB* request,
-    EndDataStreamResponsePB* response, kudu::rpc::RpcContext* rpc_context) {
+    kudu::rpc::RpcContext* rpc_context) {
   TUniqueId finst_id;
   finst_id.__set_lo(request->dest_fragment_instance_id().lo());
   finst_id.__set_hi(request->dest_fragment_instance_id().hi());
@@ -244,7 +241,7 @@ void KrpcDataStreamMgr::CloseSender(const EndDataStreamRequestPB* request,
     // pending closes. It's possible for a sender to issue EOS RPC without sending any
     // rows if no rows are materialized at all in the sender side.
     if (!already_unregistered && recvr == nullptr) {
-      AddEarlyClosedSender(finst_id, request, response, rpc_context);
+      AddEarlyClosedSender(finst_id, request, rpc_context);
       return;
     }
   }
@@ -252,8 +249,7 @@ void KrpcDataStreamMgr::CloseSender(const EndDataStreamRequestPB* request,
   // If we reach this point, either the receiver is found or it has been unregistered
   // already. In either cases, it's safe to just return an OK status.
   if (LIKELY(recvr != nullptr)) recvr->RemoveSender(request->sender_id());
-  Status::OK().ToProto(response->mutable_status());
-  rpc_context->RespondSuccess();
+  DataStreamService::Reply<EndDataStreamResponsePB>(Status::OK(), rpc_context);
 
   {
     // TODO: Move this to maintenance thread.
@@ -328,7 +324,7 @@ void KrpcDataStreamMgr::Cancel(const TUniqueId& finst_id) {
   }
 }
 
-template<typename ContextType, typename RequestPBType>
+template<typename ContextType, typename RequestPBType, typename ResponsePBType>
 void KrpcDataStreamMgr::RespondToTimedOutSender(const std::unique_ptr<ContextType>& ctx) {
   const RequestPBType* request = ctx->request;
   TUniqueId finst_id;
@@ -338,8 +334,7 @@ void KrpcDataStreamMgr::RespondToTimedOutSender(const std::unique_ptr<ContextTyp
   ErrorMsg msg(TErrorCode::DATASTREAM_SENDER_TIMEOUT, remote_addr, PrintId(finst_id),
       ctx->request->dest_node_id());
   VLOG_QUERY << msg.msg();
-  Status::Expected(msg).ToProto(ctx->response->mutable_status());
-  ctx->rpc_context->RespondSuccess();
+  DataStreamService::Reply<ResponsePBType>(Status::Expected(msg), ctx->rpc_context);
   num_senders_waiting_->Increment(-1);
   num_senders_timedout_->Increment(1);
 }
@@ -369,10 +364,12 @@ void KrpcDataStreamMgr::Maintenance() {
     // EOS will be lost forever.
     for (const EarlySendersList& senders_queue : timed_out_senders) {
       for (const unique_ptr<TransmitDataCtx>& ctx : senders_queue.waiting_sender_ctxs) {
-        RespondToTimedOutSender<TransmitDataCtx, TransmitDataRequestPB>(ctx);
+        RespondToTimedOutSender<
+            TransmitDataCtx, TransmitDataRequestPB, TransmitDataResponsePB>(ctx);
       }
       for (const unique_ptr<EndDataStreamCtx>& ctx : senders_queue.closed_sender_ctxs) {
-        RespondToTimedOutSender<EndDataStreamCtx, EndDataStreamRequestPB>(ctx);
+        RespondToTimedOutSender<
+            EndDataStreamCtx, EndDataStreamRequestPB, EndDataStreamResponsePB>(ctx);
       }
     }
     bool timed_out = false;

@@ -27,9 +27,11 @@
 #include "kudu/rpc/remote_method.h"
 #include "kudu/rpc/service_if.h"
 #include "kudu/rpc/rpc_header.pb.h"
+#include "kudu/rpc/rpc_context.h"
 #include "kudu/rpc/transfer.h"
 #include "kudu/util/faststring.h"
 #include "kudu/util/monotime.h"
+#include "kudu/util/object_pool.h"
 #include "kudu/util/slice.h"
 #include "kudu/util/status.h"
 
@@ -52,6 +54,7 @@ class RemoteUser;
 class RpcCallInProgressPB;
 struct RpcMethodInfo;
 class RpcSidecar;
+class RpcContext;
 
 struct InboundCallTiming {
   MonoTime time_received;   // Time the call was first accepted.
@@ -160,6 +163,11 @@ class InboundCall {
     return method_info_.get();
   }
 
+  // XXX
+  RpcContext* rpc_context() {
+    return scoped_rpc_context_.get();
+  }
+
   // When this InboundCall was received (instantiated).
   // Should only be called once on a given instance.
   // Not thread-safe. Should only be called by the current "owner" thread.
@@ -260,6 +268,9 @@ class InboundCall {
   // to point to the information about this method. Acts as a pointer back to
   // per-method info such as tracing.
   scoped_refptr<RpcMethodInfo> method_info_;
+
+  // XXX
+  ObjectPool<RpcContext>::scoped_ptr scoped_rpc_context_;
 
   DISALLOW_COPY_AND_ASSIGN(InboundCall);
 };

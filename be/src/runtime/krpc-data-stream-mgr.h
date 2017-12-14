@@ -171,19 +171,15 @@ struct TransmitDataCtx {
   /// such as the destination finst ID, plan node ID and the row batch header.
   const TransmitDataRequestPB* request;
 
-  /// Response data structure, will be serialized back to client after 'rpc_context' is
-  /// responded to.
-  TransmitDataResponsePB* response;
-
   /// RpcContext owns the memory of all data structures related to the incoming RPC call
   /// such as the serialized request buffer, response buffer and any sidecars. Must be
   /// responded to once this RPC is finished with. RpcContext will delete itself once it
   /// has been responded to. Not owned.
   kudu::rpc::RpcContext* rpc_context;
 
-  TransmitDataCtx(const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
+  TransmitDataCtx(const TransmitDataRequestPB* request,
       kudu::rpc::RpcContext* rpc_context)
-    : request(request), response(response), rpc_context(rpc_context) { }
+    : request(request), rpc_context(rpc_context) { }
 };
 
 /// Context for an EndDataStream() RPC. This structure is constructed when the RPC is
@@ -193,17 +189,13 @@ struct EndDataStreamCtx {
   /// Request data structure, memory owned by 'rpc_context'.
   const EndDataStreamRequestPB* request;
 
-  /// Response data structure, will be serialized back to client after 'rpc_context' is
-  /// responded to. Memory owned by 'rpc_context'.
-  EndDataStreamResponsePB* response;
-
   /// Must be responded to once this RPC is finished with. RpcContext will delete itself
   /// once it has been responded to. Not owned.
   kudu::rpc::RpcContext* rpc_context;
 
   EndDataStreamCtx(const EndDataStreamRequestPB* request,
-      EndDataStreamResponsePB* response, kudu::rpc::RpcContext* rpc_context)
-    : request(request), response(response), rpc_context(rpc_context) { }
+      kudu::rpc::RpcContext* rpc_context)
+    : request(request), rpc_context(rpc_context) { }
 };
 
 /// Singleton class which manages all incoming data streams at a backend node.
@@ -270,8 +262,7 @@ class KrpcDataStreamMgr : public DataStreamMgrBase {
   ///
   /// TODO: enforce per-sender quotas (something like 200% of buffer_size/#senders),
   /// so that a single sender can't flood the buffer and stall everybody else.
-  void AddData(const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
-      kudu::rpc::RpcContext* rpc_context);
+  void AddData(const TransmitDataRequestPB* request, kudu::rpc::RpcContext* rpc_context);
 
   /// Handler for EndDataStream() RPC.
   ///
@@ -279,8 +270,7 @@ class KrpcDataStreamMgr : public DataStreamMgrBase {
   /// sender has closed. The RPC will be responded to if the receiver is found.
   /// Otherwise, the request will be queued in the early senders list and responded
   /// to either when the receiver is created when the request has timed out.
-  void CloseSender(const EndDataStreamRequestPB* request,
-      EndDataStreamResponsePB* response, kudu::rpc::RpcContext* context);
+  void CloseSender(const EndDataStreamRequestPB* request, kudu::rpc::RpcContext* context);
 
   /// Cancels all receivers registered for fragment_instance_id immediately. The
   /// receivers will not accept any row batches after being cancelled. Any buffered
@@ -423,14 +413,12 @@ class KrpcDataStreamMgr : public DataStreamMgrBase {
   /// Adds a request of TransmitData() RPC to the early senders list. Used for storing
   /// TransmitData() RPC requests which arrive before the receiver finishes preparing.
   void AddEarlySender(const TUniqueId& fragment_instance_id,
-      const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
-      kudu::rpc::RpcContext* context);
+      const TransmitDataRequestPB* request, kudu::rpc::RpcContext* context);
 
   /// Adds a request of EndDataStream() RPC to the early senders list. Used for storing
   /// EndDataStream() RPC requests which arrive before the receiver finishes preparing.
   void AddEarlyClosedSender(const TUniqueId& fragment_instance_id,
-      const EndDataStreamRequestPB* request, EndDataStreamResponsePB* response,
-      kudu::rpc::RpcContext* context);
+      const EndDataStreamRequestPB* request, kudu::rpc::RpcContext* context);
 
   /// Enqueue 'num_requests' requests to the deserialization thread pool to drain the
   /// deferred RPCs for the receiver with fragment instance id of 'finst_id', plan node
@@ -463,7 +451,7 @@ class KrpcDataStreamMgr : public DataStreamMgrBase {
 
   /// Responds to a sender when a RPC request has timed out waiting for the receiver to
   /// show up. 'ctx' is the encapsulated RPC request context (e.g. TransmitDataCtx).
-  template<typename ContextType, typename RequestPBType>
+  template<typename ContextType, typename RequestPBType, typename ResponsePBType>
   void RespondToTimedOutSender(const std::unique_ptr<ContextType>& ctx);
 
   /// Notifies any sender that has been waiting for its receiver for more than

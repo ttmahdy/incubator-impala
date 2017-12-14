@@ -59,12 +59,10 @@ class RpcSidecar;
 // This is the server-side analogue to the RpcController class.
 class RpcContext {
  public:
+
   // Create an RpcContext. This is called only from generated code
   // and is not a public API.
-  RpcContext(InboundCall *call,
-             const google::protobuf::Message *request_pb,
-             google::protobuf::Message *response_pb,
-             const scoped_refptr<ResultTracker>& result_tracker);
+  RpcContext();
 
   ~RpcContext();
 
@@ -81,6 +79,9 @@ class RpcContext {
   // After this method returns, this RpcContext object is destroyed. The request
   // and response protobufs are also destroyed.
   void RespondSuccess();
+
+  // XXX
+  void RespondSuccess(const google::protobuf::Message& response_pb);
 
   // Like the above, but doesn't store the results of the service call, if results
   // are being tracked.
@@ -212,11 +213,18 @@ class RpcContext {
     __attribute__((noreturn));
 
  private:
+  friend class GeneratedServiceIf;
   friend class ResultTracker;
-  InboundCall* const call_;
-  const gscoped_ptr<const google::protobuf::Message> request_pb_;
-  const gscoped_ptr<google::protobuf::Message> response_pb_;
+  InboundCall* call_;
+  gscoped_ptr<const google::protobuf::Message> request_pb_;
+  gscoped_ptr<google::protobuf::Message> response_pb_;
   scoped_refptr<ResultTracker> result_tracker_;
+
+  // XXX
+  void Init(InboundCall *call,
+	    const google::protobuf::Message *request_pb,
+	    google::protobuf::Message *response_pb,
+	    const scoped_refptr<ResultTracker>& result_tracker);
 };
 
 } // namespace rpc

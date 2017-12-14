@@ -30,6 +30,7 @@
 #include "runtime/mem-tracker.h"
 #include "runtime/row-batch.h"
 #include "runtime/sorted-run-merger.h"
+#include "service/data-stream-service.h"
 #include "util/runtime-profile-counters.h"
 #include "util/periodic-counter-updater.h"
 
@@ -72,8 +73,7 @@ class KrpcDataStreamRecvr::SenderQueue {
   // If adding this batch causes us to exceed the receiver's buffer limit, the RPC state
   // is copied into 'deferred_rpcs_' for deferred processing and this function returns
   // immediately. The deferred RPCs are replied to later when space becomes available.
-  void AddBatch(const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
-      RpcContext* context);
+  void AddBatch(const TransmitDataRequestPB* request, RpcContext* context);
 
   // Tries inserting the front of 'deferred_rpcs_' queue into 'batch_queue_' if possible.
   // On success, the first entry of 'deferred_rpcs_' is removed and the sender of the RPC
@@ -322,7 +322,7 @@ void KrpcDataStreamRecvr::SenderQueue::AddBatchWork(int64_t batch_size,
 }
 
 void KrpcDataStreamRecvr::SenderQueue::AddBatch(const TransmitDataRequestPB* request,
-    TransmitDataResponsePB* response, RpcContext* rpc_context) {
+    RpcContext* rpc_context) {
   // TODO: Add timers for time spent in this function and queue time in 'batch_queue_'.
   const RowBatchHeaderPB& header = request->row_batch_header();
   kudu::Slice tuple_offsets;
@@ -331,8 +331,7 @@ void KrpcDataStreamRecvr::SenderQueue::AddBatch(const TransmitDataRequestPB* req
   Status status = UnpackRequest(request, rpc_context, &tuple_offsets, &tuple_data,
       &batch_size);
   if (UNLIKELY(!status.ok())) {
-    status.ToProto(response->mutable_status());
-    rpc_context->RespondSuccess();
+    DataStreamService::Reply<TransmitDataResponsePB>(status, rpc_context);
     return;
   }
 
@@ -344,8 +343,7 @@ void KrpcDataStreamRecvr::SenderQueue::AddBatch(const TransmitDataRequestPB* req
     // responded to if we reach here.
     DCHECK_GT(num_remaining_senders_, 0);
     if (UNLIKELY(is_cancelled_)) {
-      Status::OK().ToProto(response->mutable_status());
-      rpc_context->RespondSuccess();
+      DataStreamService::Reply<TransmitDataResponsePB>(Status::OK(), rpc_context);
       return;
     }
 
@@ -356,7 +354,7 @@ void KrpcDataStreamRecvr::SenderQueue::AddBatch(const TransmitDataRequestPB* req
     // batch needs to line up after the deferred RPCs to avoid starvation of senders
     // in the non-merging case.
     if (UNLIKELY(!deferred_rpcs_.empty() || !CanEnqueue(batch_size))) {
-      auto payload = make_unique<TransmitDataCtx>(request, response, rpc_context);
+      auto payload = make_unique<TransmitDataCtx>(request, rpc_context);
       deferred_rpcs_.push(move(payload));
       COUNTER_ADD(recvr_->num_deferred_batches_, 1);
       return;
@@ -367,8 +365,7 @@ void KrpcDataStreamRecvr::SenderQueue::AddBatch(const TransmitDataRequestPB* req
   }
 
   // Respond to the sender to ack the insertion of the row batches.
-  Status::OK().ToProto(response->mutable_status());
-  rpc_context->RespondSuccess();
+  DataStreamService::Reply<TransmitDataResponsePB>(Status::OK(), rpc_context);
 }
 
 void KrpcDataStreamRecvr::SenderQueue::DequeueDeferredRpc() {
@@ -391,8 +388,7 @@ void KrpcDataStreamRecvr::SenderQueue::DequeueDeferredRpc() {
         &tuple_data, &batch_size);
     // Reply with error status if the entry cannot be unpacked.
     if (UNLIKELY(!status.ok())) {
-      status.ToProto(ctx->response->mutable_status());
-      ctx->rpc_context->RespondSuccess();
+      DataStreamService::Reply<TransmitDataResponsePB>(status, ctx->rpc_context);
       deferred_rpcs_.pop();
       return;
     }
@@ -412,8 +408,7 @@ void KrpcDataStreamRecvr::SenderQueue::DequeueDeferredRpc() {
   }
 
   // Responds to the sender to ack the insertion of the row batches.
-  Status::OK().ToProto(ctx->response->mutable_status());
-  ctx->rpc_context->RespondSuccess();
+  DataStreamService::Reply<TransmitDataResponsePB>(Status::OK(), ctx->rpc_context);
 }
 
 void KrpcDataStreamRecvr::SenderQueue::TakeOverEarlySender(
@@ -449,8 +444,8 @@ void KrpcDataStreamRecvr::SenderQueue::Cancel() {
     // Respond to deferred RPCs.
     while (!deferred_rpcs_.empty()) {
       const unique_ptr<TransmitDataCtx>& payload = deferred_rpcs_.front();
-      Status::OK().ToProto(payload->response->mutable_status());
-      payload->rpc_context->RespondSuccess();
+      DataStreamService::Reply<TransmitDataResponsePB>(Status::OK(),
+          payload->rpc_context);
       deferred_rpcs_.pop();
     }
   }
@@ -557,10 +552,10 @@ Status KrpcDataStreamRecvr::GetNext(RowBatch* output_batch, bool* eos) {
 }
 
 void KrpcDataStreamRecvr::AddBatch(const TransmitDataRequestPB* request,
-    TransmitDataResponsePB* response, RpcContext* rpc_context) {
+    RpcContext* rpc_context) {
   int use_sender_id = is_merging_ ? request->sender_id() : 0;
   // Add all batches to the same queue if is_merging_ is false.
-  sender_queues_[use_sender_id]->AddBatch(request, response, rpc_context);
+  sender_queues_[use_sender_id]->AddBatch(request, rpc_context);
 }
 
 void KrpcDataStreamRecvr::DequeueDeferredRpc(int sender_id) {

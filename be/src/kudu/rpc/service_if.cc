@@ -86,6 +86,10 @@ void ServiceIf::RespondBadMethod(InboundCall *call) {
 GeneratedServiceIf::~GeneratedServiceIf() {
 }
 
+// XXX
+Message* GeneratedServiceIf::AllocResponseBuffer(const RpcMethodInfo* method_info) {
+  return method_info->resp_prototype->New();
+}
 
 void GeneratedServiceIf::Handle(InboundCall *call) {
   const RpcMethodInfo* method_info = call->method_info();
@@ -97,15 +101,16 @@ void GeneratedServiceIf::Handle(InboundCall *call) {
   if (PREDICT_FALSE(!ParseParam(call, req.get()))) {
     return;
   }
-  Message* resp = method_info->resp_prototype->New();
+  Message* resp = AllocResponseBuffer(call->method_info());
 
   bool track_result = call->header().has_request_id()
                       && method_info->track_result
                       && FLAGS_enable_exactly_once;
-  RpcContext* ctx = new RpcContext(call,
-                                   req.release(),
-                                   resp,
-                                   track_result ? result_tracker_ : nullptr);
+
+  // XXX
+  RpcContext* ctx = call->rpc_context();
+  ctx->Init(call, req.release(), resp, track_result ? result_tracker_ : nullptr);
+
   if (!method_info->authz_method(ctx->request_pb(), resp, ctx)) {
     // The authz_method itself should have responded to the RPC.
     return;
