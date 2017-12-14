@@ -37,14 +37,18 @@ using std::unique_ptr;
 namespace kudu {
 namespace rpc {
 
-RpcContext::RpcContext(InboundCall *call,
-                       const google::protobuf::Message *request_pb,
-                       google::protobuf::Message *response_pb,
-                       const scoped_refptr<ResultTracker>& result_tracker)
-  : call_(CHECK_NOTNULL(call)),
-    request_pb_(request_pb),
-    response_pb_(response_pb),
-    result_tracker_(result_tracker) {
+RpcContext:: RpcContext()
+  : call_(nullptr) {}
+
+
+void RpcContext::Init(InboundCall *call,
+                      const google::protobuf::Message *request_pb,
+                      google::protobuf::Message *response_pb,
+                      const scoped_refptr<ResultTracker>& result_tracker) {
+  call_ = CHECK_NOTNULL(call);
+  request_pb_.reset(request_pb);
+  response_pb_.reset(response_pb);
+  result_tracker_.reset(result_tracker.get());
   VLOG(4) << call_->remote_method().service_name() << ": Received RPC request for "
           << call_->ToString() << ":" << std::endl << SecureDebugString(*request_pb_);
   TRACE_EVENT_ASYNC_BEGIN2("rpc_call", "RPC", this,
@@ -53,6 +57,19 @@ RpcContext::RpcContext(InboundCall *call,
 }
 
 RpcContext::~RpcContext() {
+}
+
+void RpcContext::RespondSuccess(const Message& response_pb) {
+  if (AreResultsTracked()) {
+    result_tracker_->RecordCompletionAndRespond(call_->header().request_id(), &response_pb);
+  } else {
+    VLOG(4) << call_->remote_method().service_name() << ": Sending RPC success response for "
+        << call_->ToString() << ":" << std::endl << SecureDebugString(response_pb);
+    TRACE_EVENT_ASYNC_END2("rpc_call", "RPC", this,
+                           "response", pb_util::PbTracer::TracePb(response_pb),
+                           "trace", trace()->DumpToString());
+    call_->RespondSuccess(response_pb);
+  }
 }
 
 void RpcContext::RespondSuccess() {
@@ -66,7 +83,6 @@ void RpcContext::RespondSuccess() {
                            "response", pb_util::PbTracer::TracePb(*response_pb_),
                            "trace", trace()->DumpToString());
     call_->RespondSuccess(*response_pb_);
-    delete this;
   }
 }
 
@@ -83,7 +99,6 @@ void RpcContext::RespondNoCache() {
     // This is a bit counter intuitive, but when we get the failure but set the error on the
     // call's response we call RespondSuccess() instead of RespondFailure().
     call_->RespondSuccess(*response_pb_);
-    delete this;
   }
 }
 
@@ -98,7 +113,6 @@ void RpcContext::RespondFailure(const Status &status) {
                            "status", status.ToString(),
                            "trace", trace()->DumpToString());
     call_->RespondFailure(ErrorStatusPB::ERROR_APPLICATION, status);
-    delete this;
   }
 }
 
@@ -113,7 +127,6 @@ void RpcContext::RespondRpcFailure(ErrorStatusPB_RpcErrorCodePB err, const Statu
                            "status", status.ToString(),
                            "trace", trace()->DumpToString());
     call_->RespondFailure(err, status);
-    delete this;
   }
 }
 
@@ -134,7 +147,6 @@ void RpcContext::RespondApplicationError(int error_ext_id, const std::string& me
                            "response", pb_util::PbTracer::TracePb(app_error_pb),
                            "trace", trace()->DumpToString());
     call_->RespondApplicationError(error_ext_id, message, app_error_pb);
-    delete this;
   }
 }
 

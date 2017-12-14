@@ -44,7 +44,8 @@ namespace rpc {
 InboundCall::InboundCall(Connection* conn)
   : conn_(conn),
     trace_(new Trace),
-    method_info_(nullptr) {
+    method_info_(nullptr),
+    scoped_rpc_context_(conn_->AllocRpcContext()) {
   RecordCallReceived();
 }
 

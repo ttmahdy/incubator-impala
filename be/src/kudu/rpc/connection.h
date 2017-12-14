@@ -220,6 +220,10 @@ class Connection : public RefCountedThreadSafe<Connection> {
     scheduled_for_shutdown_ = true;
   }
 
+  ObjectPool<RpcContext>::scoped_ptr AllocRpcContext() {
+    return ctx_pool_.make_scoped_ptr(ctx_pool_.Construct());
+  }
+
  private:
   friend struct CallAwaitingResponse;
   friend class QueueTransferTask;
@@ -340,6 +344,12 @@ class Connection : public RefCountedThreadSafe<Connection> {
   // Also a funny name.
   ObjectPool<CallAwaitingResponse> car_pool_;
   typedef ObjectPool<CallAwaitingResponse>::scoped_ptr scoped_car;
+
+  // XXX
+  ObjectPool<RpcContext> ctx_pool_;
+
+  // XXX
+  ObjectPool<InboundCall> inbound_call_pool_;
 
   // The credentials policy to use for connection negotiation. It defines which
   // type of user credentials used to negotiate a connection. The actual type of

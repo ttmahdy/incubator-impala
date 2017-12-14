@@ -84,6 +84,13 @@ class ObjectPool {
     return obj->get();
   }
 
+  template<class Arg1, class Arg2>
+  T *Construct(Arg1 arg1, Arg2 arg2) {
+    ManualConstructor<T> *obj = GetObject();
+    obj->Init(arg1, arg2);
+    return obj->get();
+  }
+
   // Destroy an object, running its destructor and returning it to the
   // free-list.
   void Destroy(T *t) {

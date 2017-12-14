@@ -31,6 +31,8 @@
 #include "common/names.h"
 
 using kudu::rpc::RpcContext;
+using kudu::rpc::RpcMethodInfo;
+using google::protobuf::Message;
 
 namespace impala {
 
@@ -40,14 +42,33 @@ DataStreamService::DataStreamService(RpcMgr* mgr)
 void DataStreamService::EndDataStream(const EndDataStreamRequestPB* request,
     EndDataStreamResponsePB* response, RpcContext* rpc_context) {
   // CloseSender() is guaranteed to eventually respond to this RPC so we don't do it here.
-  ExecEnv::GetInstance()->KrpcStreamMgr()->CloseSender(request, response, rpc_context);
+  ExecEnv::GetInstance()->KrpcStreamMgr()->CloseSender(request, rpc_context);
 }
 
 void DataStreamService::TransmitData(const TransmitDataRequestPB* request,
     TransmitDataResponsePB* response, RpcContext* rpc_context) {
   FAULT_INJECTION_RPC_DELAY(RPC_TRANSMITDATA);
   // AddData() is guaranteed to eventually respond to this RPC so we don't do it here.
-  ExecEnv::GetInstance()->KrpcStreamMgr()->AddData(request, response, rpc_context);
+  ExecEnv::GetInstance()->KrpcStreamMgr()->AddData(request, rpc_context);
 }
 
+Message* DataStreamService::AllocResponseBuffer(const RpcMethodInfo* method_info) {
+  return nullptr;
 }
+
+template<typename ResponsePBType>
+void DataStreamService::Reply(const Status& status, RpcContext* rpc_context) {
+  ResponsePBType response_pb;
+  StatusPB status_pb;
+  status.ToProto(&status_pb);
+  response_pb.set_allocated_status(&status_pb);
+  rpc_context->RespondSuccess(response_pb);
+  response_pb.release_status();
+}
+
+template void DataStreamService::Reply<TransmitDataResponsePB>(
+    const Status& status, RpcContext* rpc_context);
+template void DataStreamService::Reply<EndDataStreamResponsePB>(
+    const Status& status, RpcContext* rpc_context);
+
+} // namespace impala

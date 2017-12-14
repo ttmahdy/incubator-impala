@@ -121,6 +121,9 @@ class GeneratedServiceIf : public ServiceIf {
 
   RpcMethodInfo* LookupMethod(const RemoteMethod& method) override;
 
+  // XXX
+  virtual google::protobuf::Message* AllocResponseBuffer(const RpcMethodInfo* method);
+
  protected:
   // For each method, stores the relevant information about how to handle the
   // call. Methods are inserted by the constructor of the generated subclass.

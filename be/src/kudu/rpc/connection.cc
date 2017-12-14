@@ -405,15 +405,14 @@ struct ResponseTransferCallbacks : public TransferCallbacks {
  public:
   ResponseTransferCallbacks(gscoped_ptr<InboundCall> call,
                             Connection *conn) :
-    call_(std::move(call)),
-    conn_(conn)
-  {}
+    call_(std::move(call)), conn_(conn) {}
 
   ~ResponseTransferCallbacks() {
     // Remove the call from the map.
     InboundCall *call_from_map = EraseKeyReturnValuePtr(
-      &conn_->calls_being_handled_, call_->call_id());
+        &conn_->calls_being_handled_, call_->call_id());
     DCHECK_EQ(call_from_map, call_.get());
+    conn_->inbound_call_pool_.Destroy(call_.release());
   }
 
   virtual void NotifyTransferFinished() OVERRIDE {
@@ -436,9 +435,7 @@ class QueueTransferTask : public ReactorTask {
  public:
   QueueTransferTask(gscoped_ptr<OutboundTransfer> transfer,
                     Connection *conn)
-    : transfer_(std::move(transfer)),
-      conn_(conn)
-  {}
+    : transfer_(std::move(transfer)), conn_(conn) {}
 
   virtual void Run(ReactorThread *thr) OVERRIDE {
     conn_->QueueOutbound(std::move(transfer_));
@@ -543,7 +540,7 @@ void Connection::ReadHandler(ev::io &watcher, int revents) {
 void Connection::HandleIncomingCall(gscoped_ptr<InboundTransfer> transfer) {
   DCHECK(reactor_thread_->IsCurrentThread());
 
-  gscoped_ptr<InboundCall> call(new InboundCall(this));
+  gscoped_ptr<InboundCall> call(inbound_call_pool_.Construct(this));
   Status s = call->ParseFrom(std::move(transfer));
   if (!s.ok()) {
     LOG(WARNING) << ToString() << ": received bad data: " << s.ToString();

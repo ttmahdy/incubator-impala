@@ -117,8 +117,7 @@ class KrpcDataStreamRecvr : public DataStreamRecvrBase {
   /// can't be added without exceeding the buffer limit, it is appended to a queue for
   /// deferred processing. The RPC will be responded to when the row batch is deserialized
   /// later.
-  void AddBatch(const TransmitDataRequestPB* request, TransmitDataResponsePB* response,
-      kudu::rpc::RpcContext* context);
+  void AddBatch(const TransmitDataRequestPB* request, kudu::rpc::RpcContext* context);
 
   /// Tries adding the first entry of 'deferred_rpcs_' queue for the sender queue
   /// identified by 'sender_id'. If is_merging_ is false, it always defaults to
