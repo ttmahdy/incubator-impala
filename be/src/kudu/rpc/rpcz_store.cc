@@ -194,7 +194,7 @@ RpczStore::RpczStore() {}
 RpczStore::~RpczStore() {}
 
 void RpczStore::AddCall(InboundCall* call) {
-  LogTrace(call);
+  //LogTrace(call);
   auto* sampler = SamplerForCall(call);
   if (PREDICT_FALSE(!sampler)) return;
 

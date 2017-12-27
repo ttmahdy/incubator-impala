@@ -305,12 +305,18 @@ void KrpcDataStreamRecvr::SenderQueue::AddBatchWork(int64_t batch_size,
   lock->unlock();
   unique_ptr<RowBatch> batch;
   {
+    MonotonicStopWatch timer;
+    timer.Start();
     SCOPED_TIMER(recvr_->deserialize_row_batch_timer_);
     // At this point, the row batch will be inserted into batch_queue_. Close() will
     // handle deleting any unconsumed batches from batch_queue_. Close() cannot proceed
     // until there are no pending insertion to batch_queue_.
     batch.reset(new RowBatch(recvr_->row_desc(), header, tuple_offsets, tuple_data,
         recvr_->mem_tracker()));
+    timer.Stop();
+    if (timer.ElapsedTime() > 1000000) {
+      LOG(INFO) << "TTT RowBatch allocation size:" << header.uncompressed_size() << " allocation time " << timer.ElapsedTime();
+    }
   }
   lock->lock();
 
