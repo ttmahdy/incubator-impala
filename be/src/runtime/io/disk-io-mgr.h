@@ -471,7 +471,7 @@ class DiskIoMgr : public CacheLineAligned {
   static AtomicInt32 next_disk_id_;
 
   // Number of file handle cache partitions to use
-  static const size_t NUM_FILE_HANDLE_CACHE_PARTITIONS = 16;
+  static const size_t NUM_FILE_HANDLE_CACHE_PARTITIONS = 256;
 
   // Caching structure that maps file names to cached file handles. The cache has an upper
   // limit of entries defined by FLAGS_max_cached_file_handles. Evicted cached file
