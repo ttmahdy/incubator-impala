@@ -288,6 +288,8 @@ enum TImpalaQueryOptions {
 
   // The maximum row size that memory is reserved for, in bytes.
   MAX_ROW_SIZE,
+
+  FAST_ADD_ROW,
 }
 
 // The summary of a DML statement.
