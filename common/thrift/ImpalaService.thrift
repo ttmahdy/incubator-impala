@@ -292,6 +292,7 @@ enum TImpalaQueryOptions {
   // The time, in seconds, that a session may be idle for before it is closed (and all
   // running queries cancelled) by Impala. If 0, idle sessions never expire.
   IDLE_SESSION_TIMEOUT,
+  FAST_ADD_ROW,
 }
 
 // The summary of a DML statement.

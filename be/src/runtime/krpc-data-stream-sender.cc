@@ -130,6 +130,7 @@ class KrpcDataStreamSender::Channel : public CacheLineAligned {
   // and the preceding RPC is still in progress. Returns error status if serialization
   // failed or if the preceding RPC failed. Return OK otherwise.
   Status AddRow(TupleRow* row);
+  Status ALWAYS_INLINE AddRowIL(TupleRow* row);
 
   // Shutdowns the channel and frees the row batch allocation. Any in-flight RPC will
   // be cancelled. It's expected that clients normally call FlushAndSendEos() before
@@ -474,6 +475,24 @@ Status KrpcDataStreamSender::Channel::SendCurrentBatch() {
   return Status::OK();
 }
 
+inline Status KrpcDataStreamSender::Channel::AddRowIL(TupleRow* row) {
+  if (batch_->AtCapacity()) {
+    // batch_ is full, let's send it.
+    RETURN_IF_ERROR(SendCurrentBatch());
+  }
+  TupleRow* dest = batch_->GetRow(batch_->AddRow());
+  const vector<TupleDescriptor*>& descs = row_desc_->tuple_descriptors();
+  for (int i = 0; i < descs.size(); ++i) {
+    if (UNLIKELY(row->GetTuple(i) == nullptr)) {
+      dest->SetTuple(i, nullptr);
+    } else {
+      dest->SetTuple(i, row->GetTuple(i)->DeepCopy(*descs[i], batch_->tuple_data_pool()));
+    }
+  }
+  batch_->CommitLastRow();
+  return Status::OK();
+}
+
 Status KrpcDataStreamSender::Channel::AddRow(TupleRow* row) {
   if (batch_->AtCapacity()) {
     // batch_ is full, let's send it.
@@ -677,21 +696,48 @@ Status KrpcDataStreamSender::Send(RuntimeState* state, RowBatch* batch) {
     // TODO: encapsulate this in an Expr as we've done for Kudu above and remove this case
     // once we have codegen here.
     int num_channels = channels_.size();
-    for (int i = 0; i < batch->num_rows(); ++i) {
-      TupleRow* row = batch->GetRow(i);
-      uint64_t hash_val = EXCHANGE_HASH_SEED;
-      for (int j = 0; j < partition_exprs_.size(); ++j) {
-        ScalarExprEvaluator* eval = partition_expr_evals_[j];
-        void* partition_val = eval->GetValue(row);
-        // We can't use the crc hash function here because it does not result in
-        // uncorrelated hashes with different seeds. Instead we use FastHash.
-        // TODO: fix crc hash/GetHashValue()
-        DCHECK(&(eval->root()) == partition_exprs_[j]);
-        hash_val = RawValue::GetHashValueFastHash(
-            partition_val, partition_exprs_[j]->type(), hash_val);
-      }
-      RETURN_IF_ERROR(channels_[hash_val % num_channels]->AddRow(row));
+
+    if (state->query_options().fast_add_row) {
+		vector<int> channel_ids(batch->num_rows());
+
+		for (int i = 0; i < batch->num_rows(); ++i) {
+		  TupleRow* row = batch->GetRow(i);
+		  uint64_t hash_val = EXCHANGE_HASH_SEED;
+		  for (int j = 0; j < partition_exprs_.size(); ++j) {
+			ScalarExprEvaluator* eval = partition_expr_evals_[j];
+			void* partition_val = eval->GetValue(row);
+			// We can't use the crc hash function here because it does not result in
+			// uncorrelated hashes with different seeds. Instead we use FastHash.
+			// TODO: fix crc hash/GetHashValue()
+			DCHECK(&(eval->root()) == partition_exprs_[j]);
+			hash_val = RawValue::GetHashValueFastHash(
+				partition_val, partition_exprs_[j]->type(), hash_val);
+		  }
+		  channel_ids[i]=hash_val % num_channels;
+		}
+
+		for (int i = 0; i < batch->num_rows(); ++i) {
+		  TupleRow* row = batch->GetRow(i);
+		  RETURN_IF_ERROR(channels_[channel_ids[i]]->AddRowIL(row));
+		}
+    } else {
+      for (int i = 0; i < batch->num_rows(); ++i) {
+		TupleRow* row = batch->GetRow(i);
+		uint64_t hash_val = EXCHANGE_HASH_SEED;
+		for (int j = 0; j < partition_exprs_.size(); ++j) {
+		  ScalarExprEvaluator* eval = partition_expr_evals_[j];
+		  void* partition_val = eval->GetValue(row);
+		  // We can't use the crc hash function here because it does not result in
+		  // uncorrelated hashes with different seeds. Instead we use FastHash.
+		  // TODO: fix crc hash/GetHashValue()
+		  DCHECK(&(eval->root()) == partition_exprs_[j]);
+		  hash_val = RawValue::GetHashValueFastHash(
+			partition_val, partition_exprs_[j]->type(), hash_val);
+		}
+		RETURN_IF_ERROR(channels_[hash_val % num_channels]->AddRow(row));
+	  }
     }
+
   }
   COUNTER_ADD(total_sent_rows_counter_, batch->num_rows());
   expr_results_pool_->Clear();
