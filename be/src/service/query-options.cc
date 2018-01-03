@@ -149,6 +149,10 @@ Status impala::SetQueryOption(const string& key, const string& value,
         query_options->__set_disable_codegen(
             iequals(value, "true") || iequals(value, "1"));
         break;
+      case TImpalaQueryOptions::FAST_ADD_ROW:
+        query_options->__set_fast_add_row(
+            iequals(value, "true") || iequals(value, "1"));
+        break;
       case TImpalaQueryOptions::BATCH_SIZE: {
         StringParser::ParseResult status;
         int val = StringParser::StringToInt<int>(value.c_str(),
