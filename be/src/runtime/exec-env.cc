@@ -320,6 +320,7 @@ Status ExecEnv::Init() {
         FLAGS_datastream_service_num_svc_threads : CpuInfo::num_cores();
     RETURN_IF_ERROR(rpc_mgr_->RegisterService(num_svc_threads,
         FLAGS_datastream_service_queue_depth, move(data_svc)));
+    FLAGS_tcmalloc_max_total_thread_cache_bytes = 1 << 30;
   }
 
   mem_tracker_.reset(
