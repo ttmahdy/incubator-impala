@@ -53,7 +53,7 @@ MemPool::ChunkInfo::ChunkInfo(int64_t size, uint8_t* buf)
   : data(buf),
     size(size),
     allocated_bytes(0) {
-  if (ImpaladMetrics::MEM_POOL_TOTAL_BYTES != NULL) {
+  if (false && ImpaladMetrics::MEM_POOL_TOTAL_BYTES != NULL) {
     ImpaladMetrics::MEM_POOL_TOTAL_BYTES->Increment(size);
   }
 }
@@ -66,7 +66,7 @@ MemPool::~MemPool() {
   }
 
   DCHECK(chunks_.empty()) << "Must call FreeAll() or AcquireData() for this pool";
-  if (ImpaladMetrics::MEM_POOL_TOTAL_BYTES != NULL) {
+  if (false && ImpaladMetrics::MEM_POOL_TOTAL_BYTES != NULL) {
     ImpaladMetrics::MEM_POOL_TOTAL_BYTES->Increment(-total_bytes_released);
   }
   DCHECK_EQ(zero_length_region_, MEM_POOL_POISON);
@@ -95,7 +95,7 @@ void MemPool::FreeAll() {
   total_reserved_bytes_ = 0;
 
   mem_tracker_->Release(total_bytes_released);
-  if (ImpaladMetrics::MEM_POOL_TOTAL_BYTES != NULL) {
+  if (false && ImpaladMetrics::MEM_POOL_TOTAL_BYTES != NULL) {
     ImpaladMetrics::MEM_POOL_TOTAL_BYTES->Increment(-total_bytes_released);
   }
 }

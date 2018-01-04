@@ -54,8 +54,10 @@ class ImpalaServicePool : public kudu::rpc::RpcService {
 
   const std::string service_name() const;
 
+  static int64_t ServiceThreadId();
+
  private:
-  void RunThread();
+  void RunThread(int64_t id);
   void RejectTooBusy(kudu::rpc::InboundCall* c);
 
   std::unique_ptr<kudu::rpc::ServiceIf> service_;

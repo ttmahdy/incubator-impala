@@ -42,6 +42,8 @@ DECLARE_bool(use_krpc);
 
 using strings::Substitute;
 
+DEFINE_int32(data_sink_buffer_size, 512 * 1024, "Data sink row batch buffer size");
+
 namespace impala {
 
 DataSink::DataSink(const RowDescriptor* row_desc, const string& name, RuntimeState* state)
@@ -65,12 +67,13 @@ Status DataSink::Create(const TPlanFragmentCtx& fragment_ctx,
 
       if (FLAGS_use_krpc) {
         *sink = pool->Add(new KrpcDataStreamSender(fragment_instance_ctx.sender_id,
-            row_desc, thrift_sink.stream_sink, fragment_ctx.destinations, 16 * 1024,
-            state));
+            row_desc, thrift_sink.stream_sink, fragment_ctx.destinations,
+            FLAGS_data_sink_buffer_size, state));
       } else {
         // TODO: figure out good buffer size based on size of output row
         *sink = pool->Add(new DataStreamSender(fragment_instance_ctx.sender_id, row_desc,
-            thrift_sink.stream_sink, fragment_ctx.destinations, 16 * 1024, state));
+            thrift_sink.stream_sink, fragment_ctx.destinations,
+            FLAGS_data_sink_buffer_size, state));
       }
       break;
     case TDataSinkType::TABLE_SINK:

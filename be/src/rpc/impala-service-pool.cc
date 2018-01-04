@@ -46,6 +46,8 @@ METRIC_DEFINE_histogram(server, impala_unused,
 
 namespace impala {
 
+static thread_local int64_t thread_id;
+
 ImpalaServicePool::ImpalaServicePool(std::unique_ptr<kudu::rpc::ServiceIf> service,
                          const scoped_refptr<kudu::MetricEntity>& entity,
                          size_t service_queue_length)
@@ -63,7 +65,7 @@ Status ImpalaServicePool::Init(int num_threads) {
   for (int i = 0; i < num_threads; i++) {
     std::unique_ptr<Thread> new_thread;
     RETURN_IF_ERROR(Thread::Create("service pool", "rpc worker",
-        &ImpalaServicePool::RunThread, this, &new_thread));
+        &ImpalaServicePool::RunThread, this, i, &new_thread));
     threads_.push_back(std::move(new_thread));
   }
   return Status::OK();
@@ -163,7 +165,9 @@ kudu::Status ImpalaServicePool::QueueInboundCall(
   return status;
 }
 
-void ImpalaServicePool::RunThread() {
+void ImpalaServicePool::RunThread(int64_t id) {
+  thread_id = id;
+  VLOG_QUERY << "Starting service thread " << ServiceThreadId();
   while (true) {
     std::unique_ptr<kudu::rpc::InboundCall> incoming;
     if (!service_queue_.BlockingGet(&incoming)) {
@@ -197,6 +201,10 @@ void ImpalaServicePool::RunThread() {
     // it will get deleted at that point.
     service_->Handle(incoming.release());
   }
+}
+
+int64_t ImpalaServicePool::ServiceThreadId() {
+  return thread_id;
 }
 
 const string ImpalaServicePool::service_name() const {

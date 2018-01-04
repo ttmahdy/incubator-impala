@@ -39,6 +39,7 @@ class Slice;
 namespace impala {
 
 template <typename K, typename V> class FixedSizeHashTable;
+class FreePool;
 class MemTracker;
 class RowBatchSerializeTest;
 class RuntimeState;
@@ -149,7 +150,7 @@ class RowBatch {
   /// from the row batch's MemPool tracked by 'mem_tracker'.
   RowBatch(const RowDescriptor* row_desc, const RowBatchHeaderPB& header,
       const kudu::Slice& input_tuple_data, const kudu::Slice& input_tuple_offsets,
-      MemTracker* mem_tracker);
+      FreePool* free_pool);
 
   /// Releases all resources accumulated at this row batch.  This includes
   ///  - tuple_ptrs
@@ -443,7 +444,8 @@ class RowBatch {
   ///
   /// TODO: clean this up once the thrift RPC implementation is removed.
   void Deserialize(const kudu::Slice& input_tuple_offsets,
-      const kudu::Slice& input_tuple_data, int64_t uncompressed_size, bool is_compressed);
+      const kudu::Slice& input_tuple_data, int64_t uncompressed_size,
+      bool is_compressed, FreePool* free_pool);
 
   typedef FixedSizeHashTable<Tuple*, int> DedupMap;
 
@@ -484,14 +486,18 @@ class RowBatch {
   /// more performant that allocating the pointers from 'tuple_data_pool_' especially
   /// with SubplanNodes in the ExecNode tree because the tuple pointers are not
   /// transferred and do not have to be re-created in every Reset().
-  int tuple_ptrs_size_;
-  Tuple** tuple_ptrs_;
+  const int tuple_ptrs_size_;
+  Tuple** tuple_ptrs_ = nullptr;
+  FreePool* tuple_ptrs_pool_ = nullptr;
 
   /// Total bytes of BufferPool buffers attached to this batch.
   int64_t attached_buffer_bytes_;
 
   /// holding (some of the) data referenced by rows
   MemPool tuple_data_pool_;
+
+  /// XXX
+  std::vector<std::pair<FreePool*,uint8_t*>> free_pool_data_;
 
   // Less frequently used members that are not accessed on performance-critical paths
   // should go below here.
