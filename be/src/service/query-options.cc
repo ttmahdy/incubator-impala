@@ -273,6 +273,9 @@ Status impala::SetQueryOption(const string& key, const string& value,
       case TImpalaQueryOptions::REQUEST_POOL:
         query_options->__set_request_pool(value);
         break;
+      case TImpalaQueryOptions::HOST_LIST:
+        query_options->__set_host_list(value);
+        break;
       case TImpalaQueryOptions::V_CPU_CORES:
         query_options->__set_v_cpu_cores(atoi(value.c_str()));
         break;

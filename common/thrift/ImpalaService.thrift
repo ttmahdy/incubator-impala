@@ -290,6 +290,8 @@ enum TImpalaQueryOptions {
   MAX_ROW_SIZE,
 
   FAST_ADD_ROW,
+
+  HOST_LIST,
 }
 
 // The summary of a DML statement.

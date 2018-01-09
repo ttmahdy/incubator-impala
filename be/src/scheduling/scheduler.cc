@@ -556,8 +556,10 @@ Status Scheduler::ComputeScanRangeAssignment(const BackendConfig& executor_confi
           // replica host.
           TReplicaPreference::type memory_distance = TReplicaPreference::REMOTE;
           IpAddr executor_ip;
+
           bool has_local_executor = assignment_ctx.executor_config().LookUpBackendIp(
               replica_host.hostname, &executor_ip);
+
           if (has_local_executor) {
             if (location.is_cached) {
               memory_distance = TReplicaPreference::CACHE_LOCAL;
@@ -697,7 +699,32 @@ Status Scheduler::Schedule(QuerySchedule* schedule) {
   // Make a copy of the executor_config upfront to avoid using inconsistent views
   // between ComputeScanRangeAssignment() and ComputeFragmentExecParams().
   ExecutorsConfigPtr config_ptr = GetExecutorsConfig();
-  RETURN_IF_ERROR(ComputeScanRangeAssignment(*config_ptr, schedule));
+
+  //query_options.host_list
+  std::string input_host_list = schedule->query_options().host_list;
+  istringstream iss(input_host_list);
+  bool useInputList = false;
+  vector<TNetworkAddress> backends;
+  int basePort = 22000;
+  if (schedule->query_options().__isset.host_list && !schedule->query_options().host_list.empty()) {
+    do
+    {
+      string substr;
+      iss >> substr;
+      cout << "Input host name: " << substr << endl;
+      if (substr.length() > 1 &&
+            GetExecutorsConfig()->LookUpBackendIp(substr, nullptr)) {
+        backends.push_back(MakeNetworkAddress(substr, basePort));
+        useInputList = true;
+	  }
+    } while (iss);
+  }
+
+  BackendConfig backend_config(backends);
+  std::shared_ptr<BackendConfig> new_executors_config = std::make_shared<BackendConfig>(backend_config);
+
+
+  RETURN_IF_ERROR(ComputeScanRangeAssignment(useInputList ? *new_executors_config : *config_ptr, schedule));
   ComputeFragmentExecParams(*config_ptr, schedule);
   ComputeBackendExecParams(schedule);
 #ifndef NDEBUG

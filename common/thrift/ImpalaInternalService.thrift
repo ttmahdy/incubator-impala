@@ -289,6 +289,8 @@ struct TQueryOptions {
   60: optional i64 max_row_size = 524288;
 
   61: optional bool fast_add_row= true;
+
+  62: optional string host_list;
 }
 
 // Impala currently has two types of sessions: Beeswax and HiveServer2
