@@ -698,12 +698,14 @@ Status KrpcDataStreamSender::Send(RuntimeState* state, RowBatch* batch) {
     int num_channels = channels_.size();
 
     if (state->query_options().fast_add_row) {
-		vector<int> channel_ids(batch->num_rows());
+		const int num_rows = batch->num_rows();
+		const int num_partition_exprs = partition_exprs_.size();
+		vector<int> channel_ids(num_rows);
 
-		for (int i = 0; i < batch->num_rows(); ++i) {
+		for (int i = 0; i < num_rows; ++i) {
 		  TupleRow* row = batch->GetRow(i);
 		  uint64_t hash_val = EXCHANGE_HASH_SEED;
-		  for (int j = 0; j < partition_exprs_.size(); ++j) {
+		  for (int j = 0; j < num_partition_exprs; ++j) {
 			ScalarExprEvaluator* eval = partition_expr_evals_[j];
 			void* partition_val = eval->GetValue(row);
 			// We can't use the crc hash function here because it does not result in
@@ -716,7 +718,7 @@ Status KrpcDataStreamSender::Send(RuntimeState* state, RowBatch* batch) {
 		  channel_ids[i]=hash_val % num_channels;
 		}
 
-		for (int i = 0; i < batch->num_rows(); ++i) {
+		for (int i = 0; i < num_rows; ++i) {
 		  TupleRow* row = batch->GetRow(i);
 		  RETURN_IF_ERROR(channels_[channel_ids[i]]->AddRowIL(row));
 		}
