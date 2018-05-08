@@ -298,6 +298,12 @@ enum TImpalaQueryOptions {
   // workaround if the planner's memory estimate is too high and prevents a runnable
   // query from being admitted. 0 or -1 means this has no effect. Defaults to 0.
   MAX_MEM_ESTIMATE_FOR_ADMISSION,
+
+  // Scan bytes limit, after which a query will be cancelled
+  MAX_SCAN_BYTES,
+
+  // CPU time limit in seconds, after which a query will be cancelled
+  MAX_CPU_TIME_S,
 }
 
 // The summary of a DML statement.

@@ -41,7 +41,7 @@ typedef std::unordered_map<string, beeswax::TQueryOptionLevel::type>
 // the DCHECK.
 #define QUERY_OPTS_TABLE\
   DCHECK_EQ(_TImpalaQueryOptions_VALUES_TO_NAMES.size(),\
-      TImpalaQueryOptions::MAX_MEM_ESTIMATE_FOR_ADMISSION + 1);\
+      TImpalaQueryOptions::MAX_CPU_TIME_S + 1);\
   REMOVED_QUERY_OPT_FN(abort_on_default_limit_exceeded, ABORT_ON_DEFAULT_LIMIT_EXCEEDED)\
   QUERY_OPT_FN(abort_on_error, ABORT_ON_ERROR, TQueryOptionLevel::REGULAR)\
   QUERY_OPT_FN(allow_unsupported_formats, ALLOW_UNSUPPORTED_FORMATS,\
@@ -132,6 +132,10 @@ typedef std::unordered_map<string, beeswax::TQueryOptionLevel::type>
   QUERY_OPT_FN(shuffle_distinct_exprs, SHUFFLE_DISTINCT_EXPRS,\
       TQueryOptionLevel::ADVANCED)\
   QUERY_OPT_FN(max_mem_estimate_for_admission, MAX_MEM_ESTIMATE_FOR_ADMISSION,\
+		  TQueryOptionLevel::ADVANCED)\
+  QUERY_OPT_FN(max_scan_bytes, MAX_SCAN_BYTES,\
+      TQueryOptionLevel::ADVANCED)\
+  QUERY_OPT_FN(max_cpu_time_s, MAX_CPU_TIME_S,\
       TQueryOptionLevel::ADVANCED)\
   ;
 

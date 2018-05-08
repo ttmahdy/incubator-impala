@@ -229,6 +229,8 @@ TEST(QueryOptions, SetIntOptions) {
       {MAKE_OPTIONDEF(batch_size),                     {0, 65536}},
       {MAKE_OPTIONDEF(query_timeout_s),                {0, I32_MAX}},
       {MAKE_OPTIONDEF(exec_time_limit_s),              {0, I32_MAX}},
+      {MAKE_OPTIONDEF(max_cpu_time_s),                 {0, I64_MAX}}
+      {MAKE_OPTIONDEF(max_scan_bytes),                 {0, I64_MAX}}
   };
   for (const auto& test_case : case_set) {
     const OptionDef<int32_t>& option_def = test_case.first;

@@ -112,6 +112,18 @@ class Coordinator::BackendState {
   /// Return peak memory consumption.
   int64_t GetPeakConsumption();
 
+  /// Return total user Cpu.
+  int64_t GetUserCpu();
+
+  /// Return total sys Cpu.
+  int64_t GetSysCpu();
+
+  /// Return total scanned bytes.
+  int64_t GetScannedBytes();
+
+  void GetBackendResourceUsage(int64_t& user_cpu, int64_t& sys_cpu, int64_t& scanned_bytes,
+      int64_t& peak_mem);
+
   /// Merge the accumulated error log into 'merged'.
   void MergeErrorLog(ErrorLogMap* merged);
 
@@ -191,6 +203,19 @@ class Coordinator::BackendState {
     /// SCAN_RANGES_COMPLETE_COUNTERs in profile_
     std::vector<RuntimeProfile::Counter*> scan_ranges_complete_counters_;
 
+    /// total scan ranges complete across all scan nodes
+    int64_t scanned_bytes_ = 0;
+
+    /// total user cpu consumed
+    int64_t cpu_user_ = 0;
+
+    /// total system cpu consumed
+    int64_t cpu_sys_ = 0;
+
+    /// BYTES_READ_COUNTERs in profile_
+    std::vector<RuntimeProfile::Counter*> bytes_read_counters_;
+
+
     /// PER_HOST_PEAK_MEM_COUNTER
     RuntimeProfile::Counter* peak_mem_counter_ = nullptr;
 
@@ -198,7 +223,8 @@ class Coordinator::BackendState {
     /// ToJson() and is displayed in the debug webpages.
     TFInstanceExecState::type current_state_ = TFInstanceExecState::WAITING_FOR_EXEC;
 
-    /// Extracts scan_ranges_complete_counters_ and peak_mem_counter_ from profile_.
+    /// Extracts scan_ranges_complete_counters_, bytes_read_counters_
+    /// and peak_mem_counter_ from profile_.
     void InitCounters();
   };
 
@@ -253,6 +279,15 @@ class Coordinator::BackendState {
   /// peak_consumption()
   int64_t peak_consumption_ = 0;
 
+  /// total scan ranges complete across all scan nodes
+  int64_t backend_scanned_bytes_ = 0;
+
+  /// total user cpu consumed
+  int64_t backend_cpu_user_ = 0;
+
+  /// total system cpu consumed
+  int64_t backend_cpu_sys_ = 0;
+
   /// Set in ApplyExecStatusReport(). Uses MonotonicMillis().
   int64_t last_report_time_ms_ = 0;
 
@@ -264,6 +299,10 @@ class Coordinator::BackendState {
 
   /// Return true if execution at this backend is done. Caller must hold lock_.
   bool IsDone() const;
+
+  /// Aggregate per instance stats for Cpu and scanned bytes
+  /// Caller must hold lock_.
+  void AggregateBackendStats();
 };
 
 /// Per fragment execution statistics.

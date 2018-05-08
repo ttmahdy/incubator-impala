@@ -164,6 +164,80 @@ class TestQueryExpiration(CustomClusterTestSuite):
     self.__expect_expired(client, query, time_limit_handle,
         "Query [0-9a-f]+:[0-9a-f]+ expired due to execution time limit of 1s000ms")
 
+  @pytest.mark.execute_serially
+  @CustomClusterTestSuite.with_args("--idle_query_timeout=0")
+  def test_query_resource_expiration(self, vector):
+    """Confirm that single queries expire if no default is set, but a per-query
+    expiration or time limit is set"""
+    impalad = self.cluster.get_any_impalad()
+    client = impalad.service.create_beeswax_client()
+    num_expired = impalad.service.get_metric_value('impala-server.num-queries-expired')
+
+    small_query = "select id from functional.alltypessmall limit 1"
+
+    # Query should succeed
+    client.execute("SET MAX_CPU_TIME_S=10000")
+    client.execute("SET MAX_SCAN_BYTES=10G")
+    small_query_large_limit_handle = client.execute_async(small_query)
+    client.execute("SET MAX_CPU_TIME_S=0")
+    client.execute("SET MAX_SCAN_BYTES=0")
+
+    # Resource limit tests are executed against TPCH
+    client.execute("use tpch")
+    large_query = "select count(*) from lineitem l1,lineitem l2,lineitem l3 where \
+            l1.l_suppkey = l2.l_linenumber and l1.l_orderkey = l2.l_orderkey and \
+            l1.l_orderkey = l3.l_orderkey group by l1.l_comment, l2.l_comment \
+            having count(*) = 99"
+
+    # Query should due to exceeding scan bytes limit
+    client.execute("SET MAX_SCAN_BYTES=100M")
+    scan_bytes_handle = client.execute_async(large_query)
+    client.execute("SET MAX_SCAN_BYTES=0")
+
+    # Query should due to cpu time limit
+    client.execute("SET MAX_CPU_TIME_S=1")
+    cpu_limit_handle = client.execute_async(large_query)
+    client.execute("SET MAX_CPU_TIME_S=0")
+
+    # Query should due to cpu time limit
+    client.execute("SET MAX_CPU_TIME_S=1")
+    client.execute("SET MAX_SCAN_BYTES=10G")
+    mixed_limit_handle = client.execute_async(large_query)
+    client.execute("SET MAX_CPU_TIME_S=0")
+    client.execute("SET MAX_SCAN_BYTES=0")
+
+    # Query should due to exec time limit
+    client.execute("SET EXEC_TIME_LIMIT_S=2")
+    client.execute("SET MAX_CPU_TIME_S=1000")
+    client.execute("SET MAX_SCAN_BYTES=100G")
+    time_limit_handle = client.execute_async(large_query)
+    client.execute("SET EXEC_TIME_LIMIT_S=0")
+    client.execute("SET MAX_CPU_TIME_S=0")
+    client.execute("SET MAX_SCAN_BYTES=0")
+
+    before = time()
+    sleep(30)
+
+    # Query with timeout of 1 should have expired, other query should still be running.
+    assert num_expired + 4 == impalad.service.get_metric_value(
+      'impala-server.num-queries-expired')
+
+    assert (client.get_state(small_query_large_limit_handle) ==
+            client.QUERY_STATES['FINISHED'])
+    assert client.get_state(scan_bytes_handle) == client.QUERY_STATES['EXCEPTION']
+    assert client.get_state(cpu_limit_handle) == client.QUERY_STATES['EXCEPTION']
+    assert client.get_state(mixed_limit_handle) == client.QUERY_STATES['EXCEPTION']
+    assert client.get_state(time_limit_handle) == client.QUERY_STATES['EXCEPTION']
+
+    self.__expect_expired(client, large_query, scan_bytes_handle,
+        "Query [0-9a-f]+:[0-9a-f]+ expired due to scan bytes limit of 100.00 MB")
+    self.__expect_expired(client, large_query, cpu_limit_handle,
+        "Query [0-9a-f]+:[0-9a-f]+ expired due to cpu limit of 1s000ms")
+    self.__expect_expired(client, large_query, mixed_limit_handle,
+        "Query [0-9a-f]+:[0-9a-f]+ expired due to cpu limit of 1s000ms")
+    self.__expect_expired(client, large_query, time_limit_handle,
+        "Query [0-9a-f]+:[0-9a-f]+ expired due to execution time limit of 2s000ms")
+
   def __expect_expired(self, client, query, handle, exception_regex):
     """Check that the query handle expired, with an error containing exception_regex"""
     try:
