@@ -313,6 +313,12 @@ enum TImpalaQueryOptions {
   // across all backends for the query exceeds this number. 0 or -1 means this has no
   // effect.
   THREAD_RESERVATION_AGGREGATE_LIMIT,
+
+  // Scan bytes limit, after which a query will be cancelled
+  MAX_SCAN_BYTES,
+
+  // CPU time limit in seconds, after which a query will be cancelled
+  MAX_CPU_TIME_S,
 }
 
 // The summary of a DML statement.

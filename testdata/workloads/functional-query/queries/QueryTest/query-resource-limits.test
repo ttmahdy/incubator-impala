@@ -1,0 +1,53 @@
+====
+---- QUERY
+# Query should succeed.
+set MAX_CPU_TIME_S=10000;
+set MAX_SCAN_BYTES="10G";
+select id from functional.alltypessmall  order by 1 limit 1
+---- TYPES
+INT
+---- RESULTS
+0
+====
+---- QUERY
+# Query should fail due to exceeding scan bytes limit.
+set MAX_SCAN_BYTES="100M";
+select count(*) from tpch.lineitem l1,tpch.lineitem l2, tpch.lineitem l3 where
+            l1.l_suppkey = l2.l_linenumber and l1.l_orderkey = l2.l_orderkey and
+            l1.l_orderkey = l3.l_orderkey group by l1.l_comment, l2.l_comment
+            having count(*) = 99
+---- CATCH
+row_regex:.*expired due to scan bytes limit of 100.00 M.*
+====
+---- QUERY
+# Query should fail due to cpu time limit.
+set MAX_CPU_TIME_S=1;
+select count(*) from tpch.lineitem l1,tpch.lineitem l2, tpch.lineitem l3 where
+            l1.l_suppkey = l2.l_linenumber and l1.l_orderkey = l2.l_orderkey and
+            l1.l_orderkey = l3.l_orderkey group by l1.l_comment, l2.l_comment
+            having count(*) = 99
+---- CATCH
+row_regex:.*expired due to cpu limit of 1s000ms.*
+====
+---- QUERY
+# Query should fail due to cpu time limit.
+set MAX_CPU_TIME_S=1;
+set MAX_SCAN_BYTES="10G";
+select count(*) from tpch.lineitem l1,tpch.lineitem l2, tpch.lineitem l3 where
+            l1.l_suppkey = l2.l_linenumber and l1.l_orderkey = l2.l_orderkey and
+            l1.l_orderkey = l3.l_orderkey group by l1.l_comment, l2.l_comment
+            having count(*) = 99
+---- CATCH
+row_regex:.*expired due to cpu limit of 1s000ms.*
+====
+---- QUERY
+# Query should fail due to exceeding time limit.
+set EXEC_TIME_LIMIT_S=2;
+set MAX_CPU_TIME_S=1;
+set MAX_SCAN_BYTES="10G";
+select count(*) from tpch.lineitem l1,tpch.lineitem l2, tpch.lineitem l3 where
+            l1.l_suppkey = l2.l_linenumber and l1.l_orderkey = l2.l_orderkey and
+            l1.l_orderkey = l3.l_orderkey group by l1.l_comment, l2.l_comment
+            having count(*) = 99
+---- CATCH
+row_regex:.*expired due to execution time limit of 2s000ms.*
