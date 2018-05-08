@@ -987,7 +987,11 @@ Status ImpalaServer::SetQueryInflight(shared_ptr<SessionState> session_state,
     idle_timeout_s = max(FLAGS_idle_query_timeout, idle_timeout_s);
   }
   int32_t exec_time_limit_s = request_state->query_options().exec_time_limit_s;
-  if (idle_timeout_s > 0 || exec_time_limit_s > 0) {
+  // Query option stores the CPU time in seconds, while internally is tracked in ns.
+  int64_t max_cpu_time_s = request_state->query_options().max_cpu_time_s;
+  int64_t max_scan_bytes = request_state->query_options().max_scan_bytes;
+  if (idle_timeout_s > 0 || exec_time_limit_s > 0 ||
+        max_cpu_time_s > 0 || max_scan_bytes > 0) {
     lock_guard<mutex> l2(query_expiration_lock_);
     int64_t now = UnixMillis();
     if (idle_timeout_s > 0) {
@@ -1001,6 +1005,18 @@ Status ImpalaServer::SetQueryInflight(shared_ptr<SessionState> session_state,
                  << PrettyPrinter::Print(exec_time_limit_s, TUnit::TIME_S);
       queries_by_timestamp_.emplace(ExpirationEvent{
           now + (1000L * exec_time_limit_s), query_id, ExpirationKind::EXEC_TIME_LIMIT});
+    }
+    if (max_cpu_time_s > 0 || max_scan_bytes > 0) {
+      if (max_cpu_time_s > 0) {
+        VLOG_QUERY << "Query " << PrintId(query_id) << " has cpu limit of "
+                   << PrettyPrinter::Print(max_cpu_time_s, TUnit::TIME_S);
+      }
+      if (max_scan_bytes > 0) {
+        VLOG_QUERY << "Query " << PrintId(query_id) << " has scan bytes limit of "
+                   << PrettyPrinter::Print(max_scan_bytes, TUnit::BYTES);
+      }
+      queries_by_timestamp_.emplace(ExpirationEvent{
+          now + 1000L, query_id, ExpirationKind::RESOURCE_LIMIT});
     }
   }
   return Status::OK();
@@ -1877,7 +1893,7 @@ void ImpalaServer::UnregisterSessionTimeout(int32_t session_timeout) {
 
 [[noreturn]] void ImpalaServer::ExpireQueries() {
   while (true) {
-    // The following block accomplishes three things:
+    // The following block accomplishes four things:
     //
     // 1. Update the ordered list of queries by checking the 'idle_time' parameter in
     // client_request_state. We are able to avoid doing this for *every* query in flight
@@ -1892,6 +1908,8 @@ void ImpalaServer::UnregisterSessionTimeout(int32_t session_timeout) {
     // 3. Compute the next time a query *might* expire, so that the sleep at the end of
     // this loop has an accurate duration to wait. If the list of queries is empty, the
     // default sleep duration is half the idle query timeout.
+    //
+    // 4. Cancel queries with Cpu and scan bytes constraints if limit is exceeded
     int64_t now;
     {
       lock_guard<mutex> l(query_expiration_lock_);
@@ -1906,6 +1924,56 @@ void ImpalaServer::UnregisterSessionTimeout(int32_t session_timeout) {
         if (query_state == nullptr || query_state->is_expired()) {
           // Query was deleted or expired already from a previous expiration event.
           expiration_event = queries_by_timestamp_.erase(expiration_event);
+          continue;
+        }
+
+        // Check for CPU and scanned bytes limits
+        if (expiration_event->kind == ExpirationKind::RESOURCE_LIMIT) {
+          Coordinator::BackendResourceUtilization query_resource_usage;
+          query_state->coord()->AggregateBackendsResourceUsage(&query_resource_usage);
+
+          // Cpu time consumed by the query so far
+          int64_t cpu_time_ns =
+            query_resource_usage.cpu_sys_time + query_resource_usage.cpu_user_time;
+          // Maximum Cpu time allowed for the query
+          int64_t max_cpu_time_ns =
+              query_state->query_options().max_cpu_time_s * 1000 * 1000 * 1000;
+          if (max_cpu_time_ns > 0 && cpu_time_ns > max_cpu_time_ns) {
+            // Should expire the query based on CPU
+            VLOG_QUERY << "Expiring query " << PrintId(expiration_event->query_id)
+                       << " due to cpu limit of " << max_cpu_time_ns << "ns.";
+            const string& err_msg = Substitute(
+                "Query $0 expired due to cpu limit of $1",
+                PrintId(expiration_event->query_id),
+                PrettyPrinter::Print(max_cpu_time_ns, TUnit::TIME_NS));
+            ExpireQuery(query_state.get(), Status::Expected(err_msg));
+            expiration_event = queries_by_timestamp_.erase(expiration_event);
+            continue;
+          }
+
+          // Bytes scanned by the query so far
+          int64_t scan_bytes = query_resource_usage.scanned_bytes;
+          // Maximum scan bytes allowed for the query
+          int64_t max_scan_bytes = query_state->query_options().max_scan_bytes;
+          if (max_scan_bytes > 0 && scan_bytes > max_scan_bytes) {
+            // Should expire the query based on scanned bytes
+            VLOG_QUERY << "Expiring query " << PrintId(expiration_event->query_id)
+                         << " due to scan bytes limit of " << max_scan_bytes<< " Bytes.";
+            const string& err_msg = Substitute(
+                "Query $0 expired due to scan bytes limit of $1",
+                PrintId(expiration_event->query_id),
+                PrettyPrinter::Print(max_scan_bytes, TUnit::BYTES));
+            ExpireQuery(query_state.get(), Status::Expected(err_msg));
+            expiration_event = queries_by_timestamp_.erase(expiration_event);
+            continue;
+          }
+
+          // Query didn't cross the resource limits, move to the end of the queue
+		  queries_by_timestamp_.emplace(ExpirationEvent{
+              now + 1000L, expiration_event->query_id, ExpirationKind::RESOURCE_LIMIT});
+
+          // Move on to the next event in the queue
+          ++expiration_event;
           continue;
         }
 

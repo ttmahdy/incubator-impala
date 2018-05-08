@@ -210,9 +210,10 @@ Status Coordinator::BackendState::GetStatus(bool* is_fragment_failure,
   return status_;
 }
 
-int64_t Coordinator::BackendState::GetPeakConsumption() {
+Coordinator::BackendResourceUtilization
+Coordinator::BackendState::GetBackendResourceUtilization() {
   lock_guard<mutex> l(lock_);
-  return peak_consumption_;
+  return resource_utilization_;
 }
 
 void Coordinator::BackendState::MergeErrorLog(ErrorLogMap* merged) {
@@ -260,8 +261,9 @@ bool Coordinator::BackendState::ApplyExecStatusReport(
     instance_stats->Update(instance_exec_status, exec_summary, scan_range_progress);
     if (instance_stats->peak_mem_counter_ != nullptr) {
       // protect against out-of-order status updates
-      peak_consumption_ =
-        max(peak_consumption_, instance_stats->peak_mem_counter_->value());
+      resource_utilization_.peak_mem_consumption =
+        max(resource_utilization_.peak_mem_consumption,
+            instance_stats->peak_mem_counter_->value());
     }
 
     // If a query is aborted due to an error encountered by a single fragment instance,
@@ -293,6 +295,9 @@ bool Coordinator::BackendState::ApplyExecStatusReport(
       // all backends have completed.
     }
   }
+
+  // Update the backend counters
+  AggregateBackendStats();
 
   // status_ has incorporated the status from all fragment instances. If the overall
   // backend status is not OK, but no specific fragment instance reported an error, then
@@ -330,6 +335,23 @@ void Coordinator::BackendState::UpdateExecStats(
         / (completion_time / 1000.0 / 1000.0 / 1000.0));
     }
     f->avg_profile_->UpdateAverage(instance_stats.profile_);
+  }
+  AggregateBackendStats();
+}
+
+void Coordinator::BackendState::AggregateBackendStats() {
+  //  Caller must hold lock_.
+
+  // AggregateBackendStats gets called multiple times, so reset the counters
+  resource_utilization_.cpu_user_time = 0;
+  resource_utilization_.cpu_sys_time = 0;
+  resource_utilization_.scanned_bytes = 0;
+
+  for (const auto& entry: instance_stats_map_) {
+    const InstanceStats& instance_stats = *entry.second;
+    resource_utilization_.cpu_user_time += instance_stats.cpu_user_time_;
+    resource_utilization_.cpu_sys_time += instance_stats.cpu_sys_time_;
+    resource_utilization_.scanned_bytes += instance_stats.scanned_bytes_;
   }
 }
 
@@ -441,6 +463,10 @@ void Coordinator::BackendState::InstanceStats::InitCounters() {
     RuntimeProfile::Counter* c =
         p->GetCounter(ScanNode::SCAN_RANGES_COMPLETE_COUNTER);
     if (c != nullptr) scan_ranges_complete_counters_.push_back(c);
+
+    RuntimeProfile::Counter* bytes_read_counter =
+        p->GetCounter(ScanNode::BYTES_READ_COUNTER);
+    if (bytes_read_counter != nullptr) bytes_read_counters_.push_back(bytes_read_counter);
   }
 
   peak_mem_counter_ =
@@ -494,6 +520,25 @@ void Coordinator::BackendState::InstanceStats::Update(
   int64_t delta = total - total_ranges_complete_;
   total_ranges_complete_ = total;
   scan_range_progress->Update(delta);
+
+  // Get user Cpu
+  RuntimeProfile::Counter* profile_user_time_counter =
+      profile_->GetCounter("TotalThreadsUserTime");
+  if (profile_user_time_counter != nullptr) {
+    cpu_user_time_ = profile_user_time_counter->value();
+  }
+
+  // Get sys Cpu
+  RuntimeProfile::Counter* profile_system_time_counter =
+      profile_->GetCounter("TotalThreadsSysTime");
+  if (profile_system_time_counter != nullptr) {
+    cpu_sys_time_ = profile_system_time_counter->value();
+  }
+
+  // Get bytes read
+  int total_bytes = 0;
+  for (RuntimeProfile::Counter* c: bytes_read_counters_) total_bytes += c->value();
+  scanned_bytes_ = total_bytes;
 
   // extract the current execution state of this instance
   current_state_ = exec_status.current_state;
@@ -589,8 +634,8 @@ void Coordinator::BackendState::ToJson(Value* value, Document* document) {
   lock_guard<mutex> l(lock_);
   value->AddMember("num_instances", fragments_.size(), document->GetAllocator());
   value->AddMember("done", IsDone(), document->GetAllocator());
-  value->AddMember(
-      "peak_mem_consumption", peak_consumption_, document->GetAllocator());
+  value->AddMember("peak_mem_consumption", resource_utilization_.peak_mem_consumption,
+      document->GetAllocator());
 
   string host = TNetworkAddressToString(impalad_address());
   Value val(host.c_str(), document->GetAllocator());

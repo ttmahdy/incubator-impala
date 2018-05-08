@@ -739,13 +739,45 @@ void Coordinator::ComputeQuerySummary() {
     fragment_stats->AddExecStats();
   }
 
-  stringstream info;
+  stringstream mem_info, cpu_user_info, cpu_system_info, scanned_bytes_info,
+      cpu_total_info, bytes_total_info;
+  int64_t total_cpu = 0, total_scanned_bytes = 0, backend_user_cpu = 0,
+      backend_sys_cpu = 0, backend_scanned_bytes = 0, peak_memory = 0;
+
   for (BackendState* backend_state: backend_states_) {
-    info << TNetworkAddressToString(backend_state->impalad_address()) << "("
-         << PrettyPrinter::Print(backend_state->GetPeakConsumption(), TUnit::BYTES)
-         << ") ";
+    BackendResourceUtilization resource_utilization =
+        backend_state->GetBackendResourceUtilization();
+    peak_memory = resource_utilization.peak_mem_consumption;
+    backend_user_cpu = resource_utilization.cpu_user_time;
+    backend_sys_cpu = resource_utilization.cpu_sys_time;
+    backend_scanned_bytes = resource_utilization.scanned_bytes;
+    string network_address = TNetworkAddressToString(
+        backend_state->impalad_address());
+
+    mem_info << network_address << "("
+             << PrettyPrinter::Print(peak_memory, TUnit::BYTES)<< ") ";
+
+    scanned_bytes_info << network_address << "("
+                       << PrettyPrinter::Print(backend_scanned_bytes, TUnit::BYTES) << ") ";
+
+    cpu_user_info << network_address << "("
+                  << PrettyPrinter::Print(backend_user_cpu, TUnit::TIME_NS) << ") ";
+
+    cpu_system_info << network_address << "("
+                    << PrettyPrinter::Print(backend_sys_cpu, TUnit::TIME_NS) << ") ";
+
+    total_cpu += backend_user_cpu + backend_sys_cpu;
+    total_scanned_bytes += backend_scanned_bytes;
   }
-  query_profile_->AddInfoString("Per Node Peak Memory Usage", info.str());
+  bytes_total_info << PrettyPrinter::Print(total_scanned_bytes, TUnit::BYTES);
+  cpu_total_info << PrettyPrinter::Print(total_cpu, TUnit::TIME_NS);
+
+  query_profile_->AddInfoString("Total Cpu Time", cpu_total_info.str());
+  query_profile_->AddInfoString("Total Bytes Read", bytes_total_info.str());
+  query_profile_->AddInfoString("Per Node Peak Memory Usage", mem_info.str());
+  query_profile_->AddInfoString("Per Node Bytes Read", scanned_bytes_info.str());
+  query_profile_->AddInfoString("Per Node User Time", cpu_user_info.str());
+  query_profile_->AddInfoString("Per Node System Time", cpu_system_info.str());
 }
 
 string Coordinator::GetErrorLog() {
@@ -784,6 +816,24 @@ void Coordinator::ReleaseAdmissionControlResources() {
   DCHECK(admission_controller != nullptr);
   admission_controller->ReleaseQuery(schedule_);
   query_events_->MarkEvent("Released admission control resources");
+}
+
+void Coordinator::AggregateBackendsResourceUsage(
+    BackendResourceUtilization* query_resource_utilization) {
+  for (BackendState* backend_state: backend_states_) {
+    // Aggregate CPU and bytes read across backends
+    BackendResourceUtilization backend_resouce_usage =
+        backend_state->GetBackendResourceUtilization();
+    query_resource_utilization->cpu_sys_time +=
+        backend_resouce_usage.cpu_sys_time;
+    query_resource_utilization->cpu_user_time +=
+        backend_resouce_usage.cpu_user_time;
+    query_resource_utilization->scanned_bytes +=
+        backend_resouce_usage.scanned_bytes;
+    query_resource_utilization->peak_mem_consumption = max(
+        backend_resouce_usage.peak_mem_consumption,
+        query_resource_utilization->peak_mem_consumption);
+  }
 }
 
 void Coordinator::UpdateFilter(const TUpdateFilterParams& params) {

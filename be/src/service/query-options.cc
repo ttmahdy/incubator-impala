@@ -659,6 +659,25 @@ Status impala::SetQueryOption(const string& key, const string& value,
         query_options->__set_max_mem_estimate_for_admission(bytes_limit);
         break;
       }
+      case TImpalaQueryOptions::MAX_SCAN_BYTES: {
+        // Parse the scan bytes limit and validate it.
+        int64_t bytes_limit;
+        RETURN_IF_ERROR(ParseMemValue(value, "query scan bytes limit", &bytes_limit));
+        query_options->__set_max_scan_bytes(bytes_limit);
+        break;
+      }
+      case TImpalaQueryOptions::MAX_CPU_TIME_S: {
+        StringParser::ParseResult result;
+        const int64_t max_cpu_time_s =
+            StringParser::StringToInt<int64_t>(value.c_str(), value.length(), &result);
+        if (result != StringParser::PARSE_SUCCESS || max_cpu_time_s < 0) {
+          return Status(
+              Substitute("Invalid max Cpu time limit: '$0'. "
+                         "Only non-negative numbers are allowed.", value));
+        }
+        query_options->__set_max_cpu_time_s(max_cpu_time_s);
+        break;
+      }
       default:
         if (IsRemovedQueryOption(key)) {
           LOG(WARNING) << "Ignoring attempt to set removed query option '" << key << "'";

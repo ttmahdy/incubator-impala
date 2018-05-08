@@ -109,8 +109,9 @@ class Coordinator::BackendState {
   Status GetStatus(bool* is_fragment_failure = nullptr,
       TUniqueId* failed_instance_id = nullptr) WARN_UNUSED_RESULT;
 
-  /// Return peak memory consumption.
-  int64_t GetPeakConsumption();
+  /// Return peak memory consumption and aggregated resource usage
+  /// across all fragment instances for this backend.
+  BackendResourceUtilization GetBackendResourceUtilization();
 
   /// Merge the accumulated error log into 'merged'.
   void MergeErrorLog(ErrorLogMap* merged);
@@ -191,6 +192,21 @@ class Coordinator::BackendState {
     /// SCAN_RANGES_COMPLETE_COUNTERs in profile_
     std::vector<RuntimeProfile::Counter*> scan_ranges_complete_counters_;
 
+    /// total scan ranges complete across all scan nodes
+    /// used by Coordinator::BackendState::AggregateBackendStats
+    int64_t scanned_bytes_ = 0;
+
+    /// total user cpu consumed for this fragments instances
+    /// used by Coordinator::BackendState::AggregateBackendStats
+    int64_t cpu_user_time_ = 0;
+
+    /// total system cpu consumed for this fragments instances
+    /// used by Coordinator::BackendState::AggregateBackendStats
+    int64_t cpu_sys_time_ = 0;
+
+    /// Collection of BYTES_READ_COUNTERs of all scan nodes in this fragment instance.
+    std::vector<RuntimeProfile::Counter*> bytes_read_counters_;
+
     /// PER_HOST_PEAK_MEM_COUNTER
     RuntimeProfile::Counter* peak_mem_counter_ = nullptr;
 
@@ -198,7 +214,8 @@ class Coordinator::BackendState {
     /// ToJson() and is displayed in the debug webpages.
     TFInstanceExecState::type current_state_ = TFInstanceExecState::WAITING_FOR_EXEC;
 
-    /// Extracts scan_ranges_complete_counters_ and peak_mem_counter_ from profile_.
+    /// Extracts scan_ranges_complete_counters_, bytes_read_counters_
+    /// and peak_mem_counter_ from profile_.
     void InitCounters();
   };
 
@@ -249,12 +266,11 @@ class Coordinator::BackendState {
   /// successful.
   bool rpc_sent_ = false;
 
-  /// peak memory used for this query (value of that node's query memtracker's
-  /// peak_consumption()
-  int64_t peak_consumption_ = 0;
-
   /// Set in ApplyExecStatusReport(). Uses MonotonicMillis().
   int64_t last_report_time_ms_ = 0;
+
+  // struct that keeps track of backend resource usage for memory, cpu and scanned bytes
+  BackendResourceUtilization resource_utilization_;
 
   /// Fill in rpc_params based on state. Uses filter_routing_table to remove filters
   /// that weren't selected during its construction.
@@ -264,6 +280,10 @@ class Coordinator::BackendState {
 
   /// Return true if execution at this backend is done. Caller must hold lock_.
   bool IsDone() const;
+
+  /// Aggregate per instance stats for Cpu and scanned bytes
+  /// Caller must hold lock_.
+  void AggregateBackendStats();
 };
 
 /// Per fragment execution statistics.
