@@ -178,6 +178,9 @@ class Coordinator { // NOLINT: The member variables could be re-ordered to save 
   /// instances running on each backend in a member named 'backend_instances'.
   void FInstanceStatsToJson(rapidjson::Document* document);
 
+  /// Aggregate CPU and bytes read metrics across all backends
+  void AggregateBackendsResourceUsage(int64_t& max_cpu_time_ns, int64_t& max_scan_bytes);
+
  private:
   class BackendState;
   struct FilterTarget;

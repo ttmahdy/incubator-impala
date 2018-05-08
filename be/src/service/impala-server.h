@@ -1033,13 +1033,18 @@ class ImpalaServer : public ImpalaServiceIf,
     IDLE_TIMEOUT,
     // A hard time limit on query execution. The query is cancelled if this event occurs
     // before the query finishes.
-    EXEC_TIME_LIMIT
+    EXEC_TIME_LIMIT,
+    // A hard limit on cpu and scanned bytes. The query is cancelled if this event occurs
+    // before the query finishes.
+    RESOURCE_LIMIT,
   };
 
   // Describes a query expiration event where the query identified by 'query_id' is
   // checked for expiration when UnixMillis() exceeds 'deadline'.
   struct ExpirationEvent {
     int64_t deadline;
+    int64_t max_cpu_time_ns;
+    int64_t max_scan_bytes;
     TUniqueId query_id;
     ExpirationKind kind;
   };
@@ -1051,6 +1056,10 @@ class ImpalaServer : public ImpalaServiceIf,
       if (t2.deadline < t1.deadline) return false;
       if (t1.query_id < t2.query_id) return true;
       if (t2.query_id < t1.query_id) return false;
+      if (t1.max_cpu_time_ns < t2.max_cpu_time_ns) return true;
+      if (t2.max_cpu_time_ns < t1.max_cpu_time_ns) return false;
+      if (t1.max_scan_bytes < t2.max_scan_bytes) return true;
+      if (t2.max_scan_bytes < t1.max_scan_bytes) return false;
       return t1.kind < t2.kind;
     }
   };
