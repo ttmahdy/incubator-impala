@@ -166,6 +166,25 @@ class Coordinator { // NOLINT: The member variables could be re-ordered to save 
   /// instances running on each backend in a member named 'backend_instances'.
   void FInstanceStatsToJson(rapidjson::Document* document);
 
+  /// Represents per backend resource usage counters.
+  struct BackendResourceUtilization {
+    /// peak memory used for this query (value of that node's query memtracker's
+    /// peak_consumption()
+    int64_t peak_mem_consumption = 0;
+
+    /// total scan ranges complete across all scan nodes
+    int64_t scanned_bytes = 0;
+
+    /// total user cpu consumed
+    int64_t cpu_user_time = 0;
+
+    /// total system cpu consumed
+    int64_t cpu_sys_time = 0;
+  };
+
+  /// Aggregate CPU, scanned bytes and peak memory consumption metrics across all backends.
+  void AggregateBackendsResourceUsage(BackendResourceUtilization* query_resource_utilization);
+
  private:
   class BackendState;
   struct FilterTarget;

@@ -144,6 +144,7 @@ TEST(QueryOptions, SetByteOptions) {
       {MAKE_OPTIONDEF(parquet_file_size),     {-1, I32_MAX}},
       {MAKE_OPTIONDEF(compute_stats_min_sample_size), {-1, I64_MAX}},
       {MAKE_OPTIONDEF(max_mem_estimate_for_admission), {-1, I64_MAX}},
+      {MAKE_OPTIONDEF(max_scan_bytes),                 {-1, I64_MAX}},
   };
   vector<pair<OptionDef<int32_t>, Range<int32_t>>> case_set_i32 {
       {MAKE_OPTIONDEF(runtime_filter_min_size),
@@ -234,6 +235,28 @@ TEST(QueryOptions, SetIntOptions) {
   for (const auto& test_case : case_set) {
     const OptionDef<int32_t>& option_def = test_case.first;
     const Range<int32_t>& range = test_case.second;
+    auto TestOk = MakeTestOkFn(options, option_def);
+    auto TestError = MakeTestErrFn(options, option_def);
+    TestError("1M");
+    TestError("0B");
+    TestError("1%");
+    TestOk(to_string(range.lower_bound).c_str(), range.lower_bound);
+    TestOk(to_string(range.upper_bound).c_str(), range.upper_bound);
+    TestError(to_string(int64_t(range.lower_bound) - 1).c_str());
+    TestError(to_string(int64_t(range.upper_bound) + 1).c_str());
+  }
+}
+
+// Test integer options. Some of them have lower/upper bounds.
+TEST(QueryOptions, SetBigIntOptions) {
+  TQueryOptions options;
+  // List of pairs of Key and its valid range
+  pair<OptionDef<int64_t>, Range<int64_t>> case_set[] {
+      {MAKE_OPTIONDEF(max_cpu_time_s),              {0, I64_MAX}},
+  };
+  for (const auto& test_case : case_set) {
+    const OptionDef<int64_t>& option_def = test_case.first;
+    const Range<int64_t>& range = test_case.second;
     auto TestOk = MakeTestOkFn(options, option_def);
     auto TestError = MakeTestErrFn(options, option_def);
     TestError("1M");
