@@ -1033,7 +1033,10 @@ class ImpalaServer : public ImpalaServiceIf,
     IDLE_TIMEOUT,
     // A hard time limit on query execution. The query is cancelled if this event occurs
     // before the query finishes.
-    EXEC_TIME_LIMIT
+    EXEC_TIME_LIMIT,
+    // A hard limit on cpu and scanned bytes. The query is cancelled if this event occurs
+    // before the query finishes.
+    RESOURCE_LIMIT,
   };
 
   // Describes a query expiration event where the query identified by 'query_id' is
